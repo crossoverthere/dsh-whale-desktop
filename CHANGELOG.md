@@ -2,6 +2,45 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-09-27
+
+### 新增
+
+- **DSH 工作状态联动（恢复上游原有功能）。**
+  桌面版不在 DSH 页面里，拿不到上游原本依赖的 DOM 信号，因此改为
+  **读取 DSH 会话文件** `~/.dsh/sessions/**/session.vN.jsonl.zstd`
+  （多帧拼接的 zstd，只增量解压新增帧），映射为：
+
+  | 会话记录 | 桌宠状态 | 立绘 |
+  | --- | --- | --- |
+  | `turn/start` `step/start` `assistant/message` `tool/result` `approval/*` | 思考中 | `thinking` |
+  | `tool/call` | 工作中（含工具名） | 按工具选 `work-*` |
+  | `turn/end` + `reason.kind=completed` | 完成 | `success` |
+  | `turn/end` 其它 reason / `tool/result` 带 `data.error` | 出错 | `failure` |
+  | 其余 / 忙态下 3 分钟无写入 | 空闲 | `idle-cute` |
+
+  工具名会喂给上游的 `detectToolPose()`，从而按类型换姿势：
+  `pwsh/bash → work-slack-phone`、`write/edit → work-meeting`、
+  `grep/glob/read → work-idea`、`todo_write → work-idea`，未识别的工具回落到通用 `tool`。
+
+  页面侧由壳层**合成上游认识的 DOM 信号**（`[data-running]` 等），
+  `vendor/whale` 依旧一个字不改。
+
+### 新增（可选）
+
+- 托盘菜单「跟随 DSH 工作状态」开关；关掉即刻回到空闲姿势
+- `npm run dsh:probe`：验证「状态 → 页面信号 → 上游状态机」整条链，
+  打印每一步上游自己认成的 `state`/`pose`/状态签/立绘
+- `/__shell/state` 增加 `dsh` 字段（当前读取到的 DSH 状态）
+
+### 修复
+
+- 状态读取器的"忙态超时兜底"曾经**写坏持久状态**：启动时只吃到前若干帧时，
+  记录的 `time` 还很旧 → 判定 stale → 把"处在 turn 内"永久清成 false，
+  而那个 `turn/start` 早已被消费，后续全是 turn 内记录，再没有东西能恢复它，
+  于是永远报空闲。现在 stale 只作为本次判定的派生量，绝不回写状态；
+  单轮解帧上限也从 400 提到 4000，启动时一次追平历史。
+
 ## [0.1.1] - 2026-09-27
 
 ### 修复

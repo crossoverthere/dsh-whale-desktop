@@ -15,6 +15,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShor
 const path = require('node:path');
 const fs = require('node:fs');
 const { startPetServer } = require('./server');
+const { DshStateWatcher } = require('./dsh-state');
 
 const ROOT = path.join(__dirname, '..');
 const PET_DIR = path.join(__dirname, 'pet');
@@ -33,12 +34,13 @@ const argValue = (name) => {
 };
 const SHOT_MODE = argValue('shot') !== undefined;
 const MENU_PROBE = argValue('menu-probe') !== undefined;
+const DSH_PROBE = argValue('dsh-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
-const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE;
+const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE;
 
 let win = null;
 let tray = null;
@@ -48,6 +50,10 @@ let isQuitting = false;
 
 /** 自检用运行时状态：外部脚本可经 /__shell/state 读取。 */
 const shellState = { interactive: false, petRect: null, updatedAt: 0 };
+/** DSH 工作状态读取器（读会话文件，见 src/dsh-state.js）。 */
+let dshWatcher = null;
+/** 最近一次推给页面的 DSH 状态。 */
+let lastDshState = { state: 'idle', tool: null, at: 0 };
 
 // ---------------------------------------------------------------- 日志
 function logFile() {
@@ -71,6 +77,8 @@ const DEFAULT_CONFIG = {
   alwaysOnTop: true,
   autoLaunch: false,
   visible: true,
+  /** 是否跟随 DSH 的工作状态（读会话文件）。 */
+  followDsh: true,
 };
 
 function configPath() {
@@ -196,7 +204,9 @@ function createWindow() {
     if (config.visible) win.showInactive();
     log('[window] loaded', server.url, 'bounds', JSON.stringify(win.getBounds()));
     startCursorPolling();
-    if (MENU_PROBE) runMenuProbe();
+    if (!DSH_PROBE) pushDshState();
+    if (DSH_PROBE) runDshProbe();
+    else if (MENU_PROBE) runMenuProbe();
     else if (SHOT_MODE) scheduleShot();
   });
 
@@ -218,8 +228,7 @@ function createWindow() {
 const CURSOR_POLL_MS = 80;
 let cursorTimer = null;
 
-function startCursorPolling() {
-  if (cursorTimer) clearInterval(cursorTimer);
+function startCursorPolling() {  if (cursorTimer) clearInterval(cursorTimer);
   cursorTimer = setInterval(() => {
     if (!win || win.isDestroyed()) return;
     const point = screen.getCursorScreenPoint();
@@ -233,6 +242,43 @@ function stopCursorPolling() {
     clearInterval(cursorTimer);
     cursorTimer = null;
   }
+}
+
+// ---------------------------------------------------------------- DSH 工作状态
+/**
+ * 读取 DSH 会话文件得到工作状态，推给页面。
+ * 页面侧（shell.js）会把它合成为上游认识的 DOM 信号，
+ * 从而复用上游原有的状态机与立绘（含按工具类型选姿势）。
+ */
+function startDshWatcher() {
+  if (dshWatcher) return;
+  dshWatcher = new DshStateWatcher({
+    log: (...parts) => log(...parts),
+    onChange: (state) => {
+      lastDshState = state;
+      // 链路探针要独占状态通道，否则真实 DSH 状态会把注入值覆盖掉
+      if (DSH_PROBE || !config || config.followDsh === false) return;
+      if (win && !win.isDestroyed()) win.webContents.send('shell:dsh-state', state);
+    },
+  });
+  dshWatcher.start();
+  log('[dsh] watcher started');
+}
+
+function stopDshWatcher() {
+  if (dshWatcher) {
+    dshWatcher.stop();
+    dshWatcher = null;
+  }
+}
+
+function pushDshState() {
+  if (!win || win.isDestroyed() || !dshWatcher) return;
+  const snapshot = config && config.followDsh === false
+    ? { state: 'idle', tool: null, at: Date.now(), source: 'disabled' }
+    : dshWatcher.snapshot();
+  lastDshState = snapshot;
+  win.webContents.send('shell:dsh-state', snapshot);
 }
 
 function setVisible(next) {
@@ -278,8 +324,21 @@ function setAutoLaunch(next) {
   refreshTrayMenu();
 }
 
-function resetPosition() {
-  if (!win) return;
+/** 开关「跟随 DSH 工作状态」。关掉时立刻把页面推回空闲，免得卡在工作姿势。 */
+function setFollowDsh(next) {
+  config.followDsh = next;
+  saveConfig();
+  if (win && !win.isDestroyed()) {
+    if (next) {
+      pushDshState();
+    } else {
+      win.webContents.send('shell:dsh-state', { state: 'idle', tool: null, at: Date.now(), source: 'disabled' });
+    }
+  }
+  refreshTrayMenu();
+}
+
+function resetPosition() {  if (!win) return;
   win.webContents
     .executeJavaScript(
       `(() => { try { localStorage.removeItem('whale-moe:floatX'); localStorage.removeItem('whale-moe:floatY'); return true; } catch (e) { return false; } })()`
@@ -302,6 +361,12 @@ function refreshTrayMenu() {
     { label: '显示桌宠', type: 'checkbox', checked: config.visible, click: () => setVisible(!config.visible) },
     { type: 'separator' },
     { label: '总是置顶', type: 'checkbox', checked: config.alwaysOnTop, click: () => setAlwaysOnTop(!config.alwaysOnTop) },
+    {
+      label: '跟随 DSH 工作状态',
+      type: 'checkbox',
+      checked: config.followDsh,
+      click: () => setFollowDsh(!config.followDsh),
+    },
     { label: '开机自启', type: 'checkbox', checked: config.autoLaunch, click: () => setAutoLaunch(!config.autoLaunch) },
     {
       label: '大小',
@@ -330,6 +395,61 @@ function createTray() {
   tray.setToolTip('鲸鱼娘桌宠');
   refreshTrayMenu();
   tray.on('click', toggleVisible);
+}
+
+// ---------------------------------------------------------------- DSH 状态链路探针
+/**
+ * 验证「状态 → 页面合成信号 → 上游状态机」这条链。
+ *
+ * 走真实 IPC 通道推状态，然后读上游自己的调试快照 `window.__dshWhaleMoeDebug`
+ * 看它认成了什么 state/pose —— 上游内部怎么想，比截图更可信。
+ * （会话文件读取器本身由 /__shell/state 的 dsh 字段单独验证。）
+ */
+function runDshProbe() {
+  // 上游对"工作中"有 goneHold（home 视图 4s）消抖，状态间隔必须大于它，
+  // 否则上一步的工作姿势会把下一步盖住 —— 这不是 bug，是上游刻意的防抖。
+  const HOLD_MS = 4500;
+  const sequence = [
+    { state: 'idle', note: '基线' },
+    { state: 'thinking' },
+    { state: 'tool', tool: 'pwsh', expect: 'work-slack-phone (bash→打电话)' },
+    { state: 'tool', tool: 'write', expect: 'work-meeting (write→开会)' },
+    { state: 'tool', tool: 'grep', expect: 'work-idea (search→灵光)' },
+    { state: 'success' },
+    { state: 'failure' },
+    { state: 'idle', note: '回到空闲' },
+  ];
+
+  setTimeout(async () => {
+    for (const item of sequence) {
+      win.webContents.send('shell:dsh-state', { ...item, at: Date.now(), source: 'probe' });
+      await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+      const snap = await win.webContents.executeJavaScript(`(() => {
+        const d = window.__dshWhaleMoeDebug || {};
+        const root = document.querySelector('[data-dsh-whale-root]');
+        const chip = root ? root.querySelector('[data-dsh-whale-chip]') : null;
+        const host = document.getElementById('dsh-whale-shell-signals');
+        // 交叉淡入淡出有两层，取当前可见的那层才准
+        const layers = root ? [...root.querySelectorAll('img[data-dsh-whale-layer]')] : [];
+        const shown = layers.filter((n) => n.style.display !== 'none' && n.getAttribute('src'));
+        const pick = shown.length ? shown[shown.length - 1] : layers[0];
+        const src = pick ? (pick.getAttribute('src') || '') : '';
+        return {
+          state: d.state || null,
+          pose: d.pose || null,
+          busy: root ? root.getAttribute('data-dsh-whale-busy') : null,
+          chip: chip ? chip.textContent : null,
+          sprite: src ? src.split('/').pop().split('?')[0] : null,
+          layerCount: layers.length,
+          signals: host ? host.innerHTML.replace(/\\s+/g, ' ').trim() : null,
+        };
+      })()`);
+      const label = item.tool ? `${item.state}/${item.tool}` : item.state;
+      log('[dsh-probe]', label, item.expect ? `(期望 ${item.expect})` : '', '->', JSON.stringify(snap));
+    }
+    log('[dsh-probe] DONE');
+    app.exit(0);
+  }, 3500);
 }
 
 // ---------------------------------------------------------------- 右键菜单越界探针
@@ -511,6 +631,8 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
           interactive: shellState.interactive,
           ignoreMouseEvents: !shellState.interactive,
           petRect: shellState.petRect,
+          dsh: dshWatcher ? dshWatcher.snapshot() : null,
+          lastDshState,
           updatedAt: shellState.updatedAt,
           cursor: screen.getCursorScreenPoint(),
           workArea: screen.getPrimaryDisplay().workArea,
@@ -527,6 +649,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
 
     createWindow();
     createTray();
+    startDshWatcher();
 
     // 开机自启在开发态与打包态路径不同，启动时用配置校正一次
     if (config.autoLaunch) setAutoLaunch(true);
@@ -552,6 +675,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
 
   app.on('will-quit', async () => {
     globalShortcut.unregisterAll();
+    stopDshWatcher();
     if (server) await server.close();
   });
 }

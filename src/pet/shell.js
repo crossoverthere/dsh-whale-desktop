@@ -162,6 +162,109 @@
     }
   }).observe(document.body, { childList: true, subtree: true });
 
+  // ---------- DSH 工作状态 → 上游信号合成 ----------
+  // 上游判断"在忙"靠的是页面里存在这些 DOM 信号（只看存在性，不读业务文本）：
+  //   thinking → [data-status="pending"]
+  //   tool     → [data-running]   （detectToolPose 还会读它的 textContent 选具体姿势）
+  //   success  → [data-state="success"]
+  //   error    → [data-status="error"]
+  //
+  // 桌面版不在 DSH 页面里，拿不到这些节点，于是由壳层按主进程读到的 DSH 状态
+  // **合成**它们 —— 上游一个字都不用改，状态机/立绘/状态签全部照原样复用。
+  //
+  // 合成节点必须满足上游 isVisible()：盒子 >1px、与视口相交、opacity 不能正好是 "0"。
+  // 另外上游对 error 节点有"基线"机制：首次 reconcile 时已存在的错误节点会被当作
+  // 历史记录忽略 —— 所以 error 节点必须**按需新建**、闪完即删，不能开机就摆着。
+  const SIGNAL_HOST_ID = 'dsh-whale-shell-signals';
+
+  /** DSH 工具名 → 上游关键词（顺序敏感：上游按 deploy/test/debug/search/write/bash/review/plan 依次匹配）。 */
+  const TOOL_HINTS = Object.freeze({
+    pwsh: 'bash shell 命令',
+    bash: 'bash shell 命令',
+    terminal: 'bash shell 命令',
+    read: 'search grep 读取',
+    glob: 'search glob 查找',
+    grep: 'search grep 查找',
+    write: 'write edit 写入',
+    edit: 'write edit 修改文件',
+    str_replace: 'write edit 修改文件',
+    web_search: 'search 搜索',
+    web_fetch: 'search 搜索',
+    todo_write: 'plan todo 计划',
+    create_goal: 'plan todo 计划',
+    update_goal: 'plan todo 计划',
+    subagent: 'plan 计划',
+    workflow: 'plan 计划',
+    present: 'write 写入',
+    job_output: 'bash shell 命令',
+  });
+
+  const SIGNAL_ATTRS = Object.freeze({
+    thinking: { 'data-status': 'pending' },
+    tool: { 'data-running': '' },
+    success: { 'data-state': 'success' },
+    error: { 'data-status': 'error' },
+  });
+  const signalNodes = new Map();
+
+  function ensureSignalHost() {
+    let host = document.getElementById(SIGNAL_HOST_ID);
+    if (host && host.isConnected) {
+      return host;
+    }
+    host = document.createElement('div');
+    host.id = SIGNAL_HOST_ID;
+    host.setAttribute('aria-hidden', 'true');
+    // 透明、不可点、2x2 且贴在视口内 —— 只为满足上游 isVisible() 的存在性判定
+    host.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1;overflow:visible';
+    document.body.appendChild(host);
+    return host;
+  }
+
+  function setSignal(name, on, text) {
+    const existing = signalNodes.get(name);
+    if (!on) {
+      if (existing) {
+        existing.remove();
+        signalNodes.delete(name);
+      }
+      return;
+    }
+    let node = existing;
+    if (!node || !node.isConnected) {
+      node = document.createElement('i');
+      for (const [key, value] of Object.entries(SIGNAL_ATTRS[name])) {
+        node.setAttribute(key, value);
+      }
+      node.style.cssText = 'display:block;width:2px;height:2px;opacity:0.01';
+      ensureSignalHost().appendChild(node);
+      signalNodes.set(name, node);
+    }
+    const next = typeof text === 'string' && text.length ? text : 'tool 工作中';
+    if (node.textContent !== next) {
+      node.textContent = next;
+    }
+  }
+
+  function applyDshState(payload) {
+    const state = payload && typeof payload.state === 'string' ? payload.state : 'idle';
+    const tool = payload ? payload.tool : null;
+    setSignal('thinking', state === 'thinking');
+    setSignal('tool', state === 'tool', tool ? (TOOL_HINTS[tool] || String(tool)) : null);
+    setSignal('success', state === 'success');
+    setSignal('error', state === 'failure');
+  }
+
+  if (typeof api.onDshState === 'function') {
+    api.onDshState((payload) => {
+      try {
+        applyDshState(payload);
+      } catch (error) {
+        api.log('error', 'applyDshState failed: ' + error.message);
+      }
+    });
+  }
+
   // ---------- 上报桌宠矩形（供自检端点/自动化测试用）----------
   function reportRect() {
     const frame = document.querySelector('[data-dsh-whale-frame]');

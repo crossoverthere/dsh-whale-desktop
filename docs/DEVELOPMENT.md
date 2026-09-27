@@ -133,7 +133,79 @@ menu.style.top  = Math.min(y, root.innerHeight - 160) + "px";
 npm run menu:probe   # 在右下角模拟右键，量出溢出像素并打印 PASS/FAIL
 ```
 
-## 5. 调试手段（看不到屏幕时靠这些）
+## 5. DSH 工作状态联动
+
+上游会在"思考中/工作中/完成/出错"时切换立绘与状态签，判断依据是页面里的
+DOM 信号（`SIGNAL_BANKS`，只看存在性、不读业务文本）。桌面版不在 DSH 页面里，
+所以这套信号必须换个来源。
+
+### 5.1 信号源：DSH 会话文件
+
+`~/.dsh/sessions/<workspace>/session-<id>/session.v3.jsonl.zstd`，形态是
+**多帧拼接的 zstd**（每次追加一帧，帧间以 magic `28 B5 2F FD` 分隔），
+每帧解压后是若干行 `{type, seq, time, data}`。
+
+所以可以只解压**新增的帧**：记住 `offset`，每次只读新增字节，按 magic 切帧。
+正在写入的最后一帧解压会失败 —— 那就**不推进 offset**，下一轮重试。
+
+实测记录类型：`turn/start`、`step/start`、`assistant/message`、`tool/call`、
+`tool/result`、`step/end`、`turn/end`、`approval/asked|decided`、`command/run|done` 等。
+
+状态映射见 `CHANGELOG.md` 的 0.2.0 小节；实现在 `src/dsh-state.js`。
+
+### 5.2 页面侧：合成上游信号
+
+`src/pet/shell.js` 按主进程推来的状态，动态创建/删除几个 `<i>` 元素：
+
+| 桌宠状态 | 合成信号 | 上游对应 bank |
+| --- | --- | --- |
+| 思考中 | `data-status="pending"` | thinking |
+| 工作中 | `data-running`（`textContent` = 工具关键词） | tool |
+| 完成 | `data-state="success"` | success |
+| 出错 | `data-status="error"` | error |
+
+两个必须遵守的约束（都来自上游 `isVisible()` 的实现）：
+
+1. 合成节点**盒子必须 > 1px、必须与视口相交、`opacity` 不能正好是 `"0"`**。
+   所以宿主是 `2x2 + opacity:0.01 + pointer-events:none`，贴在 `(0,0)`。
+2. 上游对 error 节点有**基线机制**：首次 reconcile（含启动后的 settle 窗口）时
+   已存在的错误节点会被当作历史记录忽略。因此 **error 节点必须按需新建、闪完即删**，
+   不能开机就摆在那里 —— 否则真实的出错永远不会被识别。
+   其他三类没有这个限制，但实现上统一按需创建。
+
+`textContent` 会被上游 `detectToolPose()` 读取并按关键词选具体姿势，
+所以壳层做了一张 DSH 工具名 → 关键词的表（`TOOL_HINTS`）。
+注意上游的关键词表**顺序敏感**：`deploy → test → debug → search → write → bash → review → plan`，
+首个命中即返回，写关键词时别让不相关的词先命中。
+
+### 5.3 踩过的坑：兜底逻辑不要写持久状态
+
+`src/dsh-state.js` 里有一条"忙态下 3 分钟没有新记录就认为 DSH 挂了"的兜底。
+第一版把它写成 `if (stale) this.inTurn = false` —— 结果启动时只吃到前 400 帧
+（那一批还在几十个 turn 之前），`lastRecordAt` 很旧 → 判定 stale →
+`inTurn` 被永久清掉；而最后那个 `turn/start` 早已在前一批被消费，
+后面全是 turn 内的记录，再没有 `turn/start` 来恢复它 —— **永远报空闲**。
+
+现在 `busy = inTurn && !idleTooLong` 是**派生量**，stale 绝不回写 `inTurn`。
+另外单轮解帧上限提到 4000，启动时一次追平历史，避免用中间态做判断。
+
+### 5.4 验证
+
+```bash
+npm run dsh:probe    # 走真实 IPC 推状态，读上游 __dshWhaleMoeDebug 看它认成什么
+```
+
+`dsh:probe` 会依次注入 idle/thinking/tool×3/success/failure/idle，
+并打印上游自己的 `state`/`pose`/状态签/立绘。**步进必须大于 4.5 秒**：
+上游对"工作中"有 goneHold 防抖（home 视图 4s），间隔太短下一步会被上一步盖住。
+
+实时数据源可以直接看：
+
+```bash
+curl http://127.0.0.1:38911/__shell/state   # 其中 dsh 字段即会话文件读到的状态
+```
+
+## 6. 调试手段（看不到屏幕时靠这些）
 
 ```bash
 npm run shot        # 启动 → 等 5 秒 → 截图 → 打印 DOM 状态 → 退出
@@ -172,7 +244,7 @@ npm run verify:shell   # 自动验证点击穿透（会真的移动指针，跑�
   `git -c http.proxy=http://127.0.0.1:7890 push origin main`。
   不要把它写进全局 `git config`，否则代理一关 git 就全废。
 
-## 6. 上游同步
+## 7. 上游同步
 
 ```bash
 npm run sync:upstream                 # 取上游最新 release tag
@@ -187,7 +259,7 @@ npm run check:vendor                  # 校验素材完整性
 同步后请跑一次 `npm run shot`，确认立绘仍能加载（上游若改了变量名，
 `layerLoaded: true` 这条会立刻暴露问题）。
 
-## 7. 打包（待做）
+## 8. 打包（待做）
 
 目前是开发态运行。要出免安装 exe 需要加 `electron-builder`：
 
@@ -198,7 +270,7 @@ npm i -D electron-builder
 并在 `package.json` 增加 `build` 段（`win.target: portable` / `nsis`）。
 注意 `vendor/` 必须打进 asar 或作为 extraResource 一起分发。
 
-## 8. 路线图 / 已知限制
+## 9. 路线图 / 已知限制
 
 - **工作状态联动**：上游靠 `MutationObserver` 观察 DSH 页面 DOM 来判断"正在跑工具"。
   独立宿主没有那个 DOM，需要另接信号源（DSH 事件流、或本地钩子）。

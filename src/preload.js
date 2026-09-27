@@ -36,4 +36,13 @@ contextBridge.exposeInMainWorld('whaleShell', {
     ipcRenderer.on('shell:busy', handler);
     return () => ipcRenderer.removeListener('shell:busy', handler);
   },
+  /**
+   * DSH 工作状态（主进程读会话文件得到）：
+   * { state: 'idle'|'thinking'|'tool'|'success'|'failure', tool: string|null, ... }
+   */
+  onDshState: (cb) => {
+    const handler = (_event, payload) => cb(payload);
+    ipcRenderer.on('shell:dsh-state', handler);
+    return () => ipcRenderer.removeListener('shell:dsh-state', handler);
+  },
 });
