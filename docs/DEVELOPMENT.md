@@ -317,6 +317,30 @@ window.__dshWhaleMoeWeather.fetchedAt = Date.now();
 `src/pet/preshim.js` 在**上游脚本之前**加载，只拦截这一个 URL 并重写到
 `whale-moe:balanceEndpoint`，其它请求原样放行 —— `vendor/whale` 依旧零改动。
 
+### 5.5 余额为什么需要一个本地代理
+
+上游要的形状与 DeepSeek 官方接口不同：
+
+``
+官方 GET https://api.deepseek.com/user/balance
+  → { is_available, balance_infos: [ { currency, total_balance, granted_balance, topped_up_balance } ] }
+上游 { ok: true, balances: [ { currency, totalBalance } ] }
+``
+
+所以 src/balance-proxy.js 做三件事：取 Key、转字段、**补 CORS 头**。
+
+CORS 是硬要求，不是可选项：桌宠页面源是 `http://127.0.0.1:<port>`，代理在 3020，
+**端口不同就是跨源**，少了 `Access-Control-Allow-Origin` 浏览器会静默拦掉 ——
+表现是"余额不可用"，只有控制台会说原因。做这个功能时最容易卡在这里。
+
+Key 的取法按优先级：`DEEPSEEK_API_KEY` 环境变量 →
+`~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（实测是明文）→
+用户数据目录的 `balance-key.txt`。只在内存里用，不落盘、不打日志。
+
+> 顺带一个结论：**localStorage 不跨进程共享**（即使同一个 userData、同一个 origin）。
+> 所以"从外部进程替用户改设置"这条路走不通，设置必须由页面自己写。
+> 同理，主进程想断言浮层内容，只能让页面把结果报上来（见 `petRect.hud`）。
+
 ## 6. DSH 工作状态联动
 
 上游会在"思考中/工作中/完成/出错"时切换立绘与状态签，判断依据是页面里的

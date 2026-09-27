@@ -682,6 +682,13 @@
       viewport: { w: window.innerWidth, h: window.innerHeight },
       interactive,
       lastMouse,
+      // 浮层内容也上报：主进程读不到渲染进程的 localStorage，
+      // 把结果带出来才能在外部（/__shell/state）断言"天气/余额真的显示出来了"
+      hud: {
+        weather: hudReadWeather(),
+        balance: hudReadBalance(),
+        badge: hudReadBadge(),
+      },
     });
   }
 

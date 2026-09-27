@@ -188,17 +188,50 @@
 
   function renderEnvGroup() {
     const group = document.getElementById('group-env');
+
+    // 「测试」按钮：直接打这个接口，把结果摊开给用户看 —— 省得靠猜
+    const probe = document.createElement('span');
+    probe.className = 'hint';
+    probe.textContent = '';
+    const testButton = actionButton('测试', async () => {
+      const endpoint = (prefText('balanceEndpoint', '') || 'http://127.0.0.1:3020/balance').trim();
+      testButton.disabled = true;
+      probe.textContent = '请求中…';
+      try {
+        const res = await fetch(endpoint, { cache: 'no-store' });
+        const data = await res.json();
+        if (data && data.ok && Array.isArray(data.balances) && data.balances.length) {
+          const first = data.balances[0];
+          probe.textContent = `✓ 可用：${first.currency} ${first.totalBalance}（来源 ${data.source || '未知'}）`;
+        } else {
+          probe.textContent = `✗ 接口通了但数据不合契约：${JSON.stringify(data).slice(0, 120)}`;
+        }
+      } catch (error) {
+        probe.textContent = `✗ 连不上：${error.message}`;
+      } finally {
+        testButton.disabled = false;
+      }
+    });
+    const testRow = document.createElement('div');
+    testRow.className = 'row';
+    const testText = document.createElement('div');
+    testText.className = 'text';
+    testText.append(Object.assign(document.createElement('div'), { className: 'name', textContent: '测试余额接口' }));
+    testText.append(probe);
+    testRow.append(testText, testButton);
+
     group.append(
       textRow('天气城市', '留空则不查询天气（走 Open-Meteo，无需 Key）', prefText('weatherCity', ''), '例如 上海', (v) => prefWrite('weatherCity', v)),
       textRow('天气 API Key', '选填：仅当你的 Open-Meteo 需要 apikey 时填', prefText('weatherKey', ''), '留空即可', (v) => prefWrite('weatherKey', v)),
       row('显示余额', '开启后她才会去读余额', toggle(prefFlag('balance'), (on) => prefWrite('balance', on ? '1' : ''))),
       textRow(
         '余额接口',
-        '默认走本机余额代理；桌面版可改成你自己的接口',
+        '留空 = 用内置代理（127.0.0.1:3020，自动读 DSH 里的 DeepSeek Key，随桌宠启停）',
         prefText('balanceEndpoint', ''),
         'http://127.0.0.1:3020/balance',
         (v) => prefWrite('balanceEndpoint', v)
-      )
+      ),
+      testRow
     );
   }
 

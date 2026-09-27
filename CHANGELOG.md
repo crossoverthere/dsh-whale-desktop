@@ -2,6 +2,58 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-09-27
+
+### 新增：内置余额代理 `src/balance-proxy.js`
+
+上游把余额接口写死成 `http://127.0.0.1:3020/balance`，而 DeepSeek 官方接口的
+字段名与它要的形状**不一样**。这个模块做三件事：取 Key、转字段、补 CORS 头。
+
+```
+DeepSeek 官方  GET https://api.deepseek.com/user/balance
+  → { is_available, balance_infos: [ { currency, total_balance, ... } ] }
+上游要的       { ok: true, balances: [ { currency, totalBalance } ] }
+```
+
+- **Key 自动读取，无需手工配置**，优先级：
+  1. 环境变量 `DEEPSEEK_API_KEY`
+  2. `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（实测为明文）
+  3. 用户数据目录下的 `balance-key.txt`（手动兜底）
+
+  只在内存里使用，不落盘、不打日志、不随仓库分发。
+- `ok` 按「有没有余额条目」判定，而不是上游的 `is_available` —— 余额为 0 也是有效信息，
+  不该整块变成"不可用"
+- **必须补 `Access-Control-Allow-Origin`**：桌宠页面源与代理不同端口 = 跨源，
+  少了这个头浏览器会静默拦掉，表现就是"余额不可用"
+- 随桌宠一起启停；3020 被占用不算致命（那说明用户已经有自己的代理）
+- 也可独立运行：`node src/balance-proxy.js`
+
+### 新增
+
+- 设置窗口「余额接口」下面加了**测试**按钮：直接请求该接口并把结果摊开显示
+  （`✓ 可用：CNY 43.09（来源 dsh-credentials）`，或具体错误），不用靠猜
+- 浮层内容（天气/余额/称号）纳入 `/__shell/state` 上报。主进程读不到渲染进程的
+  `localStorage`，把结果带出来才能在外部断言"天气/余额真的显示出来了"
+
+### 验证（`npm run growth:probe`，15 项）
+
+实测读到真实余额：**CNY 43.2**（充值 43.2、赠金 0、来源 `dsh-credentials`）。
+
+其中"3020 上有按契约应答的余额服务"这条断言**看的是服务本身，而不是本进程里的对象**：
+探针实例与常驻实例会抢 3020，抢不到的那个 `balanceProxy` 为 null，但服务仍然在 ——
+这正是第一版断言误报的原因。
+
+## [0.5.1] - 2026-09-27
+
+### 修复
+
+- **`index.html` 的 `connect-src` 只放行了 `127.0.0.1:3020`**，而「余额接口」是可在
+  设置里改的 —— 改成任何别的地址都会被 CSP 拦掉，表现同样是"余额不可用"，
+  而且只有浏览器控制台会说明原因，极难排查。已放宽为
+  `http://127.0.0.1:* / http://localhost:* / https:`
+- `growth:probe` 增加余额端到端断言：起一个符合契约的本机接口，验证自定义地址
+  真的能用（实测 `amount=888.5/CNY/tier=rich`，503ms）
+
 ## [0.5.0] - 2026-09-27
 
 ### 新增：养成 / 图鉴（复用上游状态机，不重写算法）

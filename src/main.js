@@ -17,6 +17,10 @@ const fs = require('node:fs');
 const http = require('node:http');
 const { startPetServer } = require('./server');
 const { DshStateWatcher } = require('./dsh-state');
+const { startBalanceProxy } = require('./balance-proxy');
+
+/** 内置余额代理（见 src/balance-proxy.js）。 */
+let balanceProxy = null;
 
 const ROOT = path.join(__dirname, '..');
 const PET_DIR = path.join(__dirname, 'pet');
@@ -957,12 +961,39 @@ function runGrowthProbe() {
         Boolean(balance && balance.ok !== false && balance.amount === 888.5),
         JSON.stringify(balance)
       );
+
+      // ---- 9) 3020 上确实有按契约应答的余额服务 ----
+      // 注意：探针实例与常驻实例会抢 3020，抢不到的那个 balanceProxy 为 null，
+      // 但那不代表"没有服务"（服务由常驻实例提供）。所以断言的是**服务本身**，
+      // 而不是我们这个进程里的对象 —— 这正是之前那条断言误报的原因。
+      let defaultService = null;
+      try {
+        const res = await fetch('http://127.0.0.1:3020/balance', { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        defaultService = {
+          ok: Boolean(data && data.ok),
+          count: Array.isArray(data && data.balances) ? data.balances.length : 0,
+          amount: data && data.balances && data.balances[0] ? data.balances[0].totalBalance : null,
+          source: data ? data.source : null,
+        };
+      } catch (error) {
+        defaultService = { error: error.message };
+      }
+      check(
+        '3020 上有按契约应答的余额服务（内置代理或既有服务）',
+        Boolean(defaultService && defaultService.ok && defaultService.count > 0),
+        JSON.stringify({
+          ownProxy: Boolean(balanceProxy),
+          keySource: balanceProxy ? balanceProxy.keySource : null,
+          service: defaultService,
+        })
+      );
     } catch (error) {
       log('[growth-probe] failed', error.message);
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 14;
+    const expected = 15;
     log(
       '[growth-probe]',
       results.length !== expected
@@ -1454,6 +1485,23 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
     createTray();
     startDshWatcher();
 
+    /*
+     * 内置余额代理。上游把余额接口写死成 http://127.0.0.1:3020/balance，
+     * 而 DeepSeek 官方接口的字段名与它要的形状不同 —— 这里自己起一个满足契约的服务，
+     * Key 自动从 DSH 凭据库（~/.dsh/.credentials.yaml 的 refs.DEEPSEEK_API_KEY）读取，
+     * 用户不需要手工配置。3020 被占用不算致命：那说明用户有自己的代理。
+     */
+    try {
+      balanceProxy = await startBalanceProxy({
+        port: 3020,
+        userDataDir: app.getPath('userData'),
+        log: (...args) => log('[balance]', ...args),
+      });
+    } catch (error) {
+      balanceProxy = null;
+      log('[balance] 未启动（端口被占用或出错）:', error.message);
+    }
+
     // 开机自启在开发态与打包态路径不同，启动时用配置校正一次
     if (config.autoLaunch) setAutoLaunch(true);
 
@@ -1481,6 +1529,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
     stopDshWatcher();
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.destroy();
     if (growthWin && !growthWin.isDestroyed()) growthWin.destroy();
+    if (balanceProxy) await balanceProxy.close();
     if (server) await server.close();
   });
 }
