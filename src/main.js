@@ -18,6 +18,7 @@ const http = require('node:http');
 const { startPetServer } = require('./server');
 const { DshStateWatcher } = require('./dsh-state');
 const { startBalanceProxy } = require('./balance-proxy');
+const { costOf, shouldAnnounce, announceText } = require('./pricing');
 
 /** 内置余额代理（见 src/balance-proxy.js）。 */
 let balanceProxy = null;
@@ -56,12 +57,14 @@ const MENU_PROBE = argValue('menu-probe') !== undefined;
 const DSH_PROBE = argValue('dsh-probe') !== undefined;
 const SETTINGS_PROBE = argValue('settings-probe') !== undefined;
 const GROWTH_PROBE = argValue('growth-probe') !== undefined;
+const SAY_PROBE = argValue('say-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
-const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE;
+const PROBE_MODE =
+  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE;
 
 let win = null;
 let tray = null;
@@ -100,6 +103,15 @@ const DEFAULT_CONFIG = {
   visible: true,
   /** 是否跟随 DSH 的工作状态（读会话文件）。 */
   followDsh: true,
+  /**
+   * 任务结束后用台词播报本次花费。阈值以下的零头不打扰（默认 1 分钱）。
+   * 单价可改是因为官方调价是会发生的；默认值见 src/pricing.js。
+   */
+  costSay: true,
+  costThreshold: 0.01,
+  costPriceHit: 0.02,
+  costPriceMiss: 1,
+  costPriceOutput: 4,
 };
 
 function configPath() {
@@ -228,6 +240,7 @@ function createWindow() {
     if (!DSH_PROBE) pushDshState();
     if (SETTINGS_PROBE) runSettingsProbe();
     else if (GROWTH_PROBE) runGrowthProbe();
+    else if (SAY_PROBE) runSayProbe();
     else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
     else if (SHOT_MODE) scheduleShot();
@@ -283,9 +296,57 @@ function startDshWatcher() {
       if (DSH_PROBE || !config || config.followDsh === false) return;
       if (win && !win.isDestroyed()) win.webContents.send('shell:dsh-state', state);
     },
+    onTurnEnd: (event) => announceTurnCost(event),
   });
   dshWatcher.start();
   log('[dsh] watcher started');
+}
+
+/**
+ * 让桌宠说一句话。
+ *
+ * `__dshWhaleMoeSay` 是 src/server.js 在返回 /pet/mascot.js 时注入的一行补丁
+ * （磁盘上的 vendor 文件没动）。上游没改锚点它就一定在；万一不在，返回 false，
+ * 调用方降级成"只写日志"，不会静默假装播报过。
+ */
+function sayToPet(text) {
+  if (!win || win.isDestroyed()) return Promise.resolve(false);
+  const script = `(function(){ if (typeof window.__dshWhaleMoeSay !== 'function') return false; window.__dshWhaleMoeSay(${JSON.stringify(
+    String(text),
+  )}); return true; })()`;
+  return win.webContents.executeJavaScript(script).catch((error) => {
+    log('[say] failed', error.message);
+    return false;
+  });
+}
+
+/**
+ * 一个 turn 结束后播报花费。
+ *
+ * 阈值的作用是"别为几分钱刷屏"：低于阈值连日志都不写（正常任务动辄上千万 tokens，
+ * 真到了无声无息反而更值得怀疑，所以跳过时留一行日志便于排查）。
+ *
+ * 计时点用 Date.now() 而不是 turn 开始时间：峰谷价按**结算时刻**算更接近实际账单，
+ * 而且跨峰谷的 turn 本来就只能给一个估算值。
+ */
+function announceTurnCost({ usage, reason }) {
+  if (!config || config.costSay === false) return;
+  const prices = {
+    cacheHitPerM: Number(config.costPriceHit),
+    cacheMissPerM: Number(config.costPriceMiss),
+    outputPerM: Number(config.costPriceOutput),
+  };
+  const at = Date.now();
+  const cost = costOf(usage, prices, at);
+  if (!shouldAnnounce(cost, config.costThreshold)) {
+    log('[cost] 低于阈值，不播报', cost.toFixed(6), 'reason=', reason ? reason.kind : 'n/a');
+    return;
+  }
+  const text = announceText(usage, cost);
+  log('[cost]', text, 'reason=', reason ? reason.kind : 'n/a');
+  sayToPet(text).then((ok) => {
+    if (!ok) log('[cost] 说话钩子不可用，已跳过播报');
+  });
 }
 
 function stopDshWatcher() {
@@ -329,6 +390,16 @@ let settingsWin = null;
  * 注：openSettingsWindow 是这套helper之前写的，逻辑等价但没走这里；
  *     下次改设置窗口时顺手迁移过来，别让两份实现漂移。
  */
+/**
+ * 辅助窗口（设置 / 养成）的内容高度上限。
+ *
+ * 为什么不写死：写死 760 的时候，多一组设置就静默多出一条滚动条 ——
+ * 内容没丢，但最后一组被压到折叠线以下，看起来像"设置少了"。
+ */
+function maxAuxContentHeight() {
+  return Math.max(320, screen.getPrimaryDisplay().workAreaSize.height - 40);
+}
+
 function createAuxWindow({ width, height, title, url, preload, autoSize }) {
   const aux = new BrowserWindow({
     width,
@@ -374,12 +445,12 @@ function createAuxWindow({ width, height, title, url, preload, autoSize }) {
         const needed = await aux.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
         if (needed > 0) {
           const [w] = aux.getContentSize();
-          const capped = Math.min(Math.max(needed, 200), 760);
+          const capped = Math.min(Math.max(needed + 2, 200), maxAuxContentHeight());
           aux.setContentSize(w, capped);
           if (needed > capped) {
             await aux.webContents.executeJavaScript("document.body.style.overflowY = 'auto'");
           }
-          log('[aux]', title, 'content sized to', needed, 'capped', capped);
+          log('[aux]', title, 'content sized to', needed, '->', capped);
         }
       } catch (error) {
         log('[aux]', title, 'auto-size failed', error.message);
@@ -426,8 +497,13 @@ function openSettingsWindow() {
     return settingsWin;
   }
   settingsWin = new BrowserWindow({
-    width: 580,
-    height: 520,
+    /*
+     * 宽度是为"不出现滚动条"服务的：设置项是"标题 + 说明"的长文本，
+     * 宽度不够时说明会折行，每折一行就多一行的高度。
+     * 高度则按实际渲染结果量出来（见下面的 did-finish-load），这里给的只是初值。
+     */
+    width: 900,
+    height: 620,
     show: false, // 等 ready-to-show（首帧就绪）再显示，避免先出现一块空白
     resizable: false,
     minimizable: false,
@@ -452,6 +528,7 @@ function openSettingsWindow() {
   settingsWin.setAlwaysOnTop(true, 'screen-saver');
   settingsWin.loadURL(`${server.url}/pet/settings.html`);
 
+
   // 失焦就撤掉置顶，免得它一直浮在别的应用上面
   settingsWin.on('focus', () => {
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setAlwaysOnTop(true, 'screen-saver');
@@ -467,23 +544,43 @@ function openSettingsWindow() {
     settingsWin.webContents.invalidate();
     log('[settings] shown (alwaysOnTop=' + settingsWin.isAlwaysOnTop() + ')');
   });
-  // 内容高度随字体/缩放/分类数量而变，按实际渲染高度自适应
+  /*
+   * 内容高度跟着实际渲染结果走（分类数量、字体、缩放都会变）。
+   *
+   * 为什么要反复量：设置项是 renderShellConfig() 里 await 一次 IPC 之后才插进 DOM 的，
+   * did-finish-load 时量到的是"还没渲染完"的高度，只量一次会得到一个偏矮的窗口。
+   * 所以量到连续两次相同（渲染稳定）为止。
+   *
+   * 上限用工作区高度而不是写死的 760：写死的话，多一组设置就会静默多出一条滚动条
+   * （不报错，只是最后一组被压到折叠线以下）。
+   */
   settingsWin.webContents.once('did-finish-load', async () => {
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 250)); // 等 IPC 渲染完各分组
-      const needed = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
-      if (needed > 0) {
-        const [width] = settingsWin.getContentSize();
-        const capped = Math.min(Math.max(needed, 200), 760);
-        settingsWin.setContentSize(width, capped);
-        if (needed > capped) {
-          // 小屏幕上放不下就让它可以滚，别硬裁掉
-          await settingsWin.webContents.executeJavaScript("document.body.style.overflowY = 'auto'");
-        }
-        log('[settings] content sized to', needed, 'capped', capped);
+    const cap = maxAuxContentHeight();
+    let previous = -1;
+    for (let i = 0; i < 12; i++) {
+      if (!settingsWin || settingsWin.isDestroyed()) return;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      let needed;
+      try {
+        needed = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
+      } catch (error) {
+        log('[settings] auto-size failed', error.message);
+        return;
       }
-    } catch (error) {
-      log('[settings] auto-size failed', error.message);
+      if (needed === previous) break;
+      previous = needed;
+      if (!needed) return;
+      const capped = Math.min(Math.max(needed + 2, 200), cap);
+      const [width, current] = settingsWin.getContentSize();
+      if (Math.abs(capped - current) > 2) {
+        settingsWin.setContentSize(width, capped);
+        const [, after] = settingsWin.getContentSize();
+        log('[settings] content sized to', needed, '->', after, capped < needed ? '(已到上限，将可滚动)' : '');
+      }
+      if (needed > cap) {
+        // 小屏幕上放不下就让它可以滚，别硬裁掉
+        await settingsWin.webContents.executeJavaScript("document.body.style.overflowY = 'auto'");
+      }
     }
   });
   settingsWin.on('closed', () => {
@@ -1006,6 +1103,111 @@ function runGrowthProbe() {
   }, 3500);
 }
 
+// ---------------------------------------------------------------- 花费播报探针
+/**
+ * 验证"任务结束后她说一句本次花费"链路的最后一环：主进程 → 页面 → 气泡里真的有字。
+ *
+ * 前面几环都能离线测（scripts/test-cost.mjs 覆盖计价、阈值与 turn 累加），
+ * 唯独"钩子调了但气泡里没字"只能靠真实页面断言 —— 钩子存在 ≠ 话说得出来：
+ * 气泡节点可能还没建立、台词可能被 localizeLine 改写、气泡可能没被取消隐藏。
+ * 所以这里断言的是**可见气泡里的完整文本**，而不是 window 上有没有那个函数。
+ */
+function runSayProbe() {
+  const target = typeof argValue('say-probe') === 'string'
+    ? argValue('say-probe')
+    : path.join(ROOT, 'tmp', 'say-probe.png');
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  setTimeout(async () => {
+    const results = [];
+    const check = (name, ok, detail) => {
+      results.push({ name, ok });
+      log('[say-probe]', ok ? 'PASS' : 'FAIL', name, detail ? '-> ' + detail : '');
+    };
+    const readBubble = () =>
+      win.webContents.executeJavaScript(`(() => {
+        const bubble = document.querySelector('[data-dsh-whale-bubble]');
+        const text = document.querySelector('[data-dsh-whale-bubble-text]');
+        if (!bubble || !text) return null;
+        return { hidden: Boolean(bubble.hidden), text: text.textContent || '' };
+      })()`);
+
+    try {
+      // 与单测同一组样本值：真实 turn 的用量
+      const sample = { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 };
+      const expected = announceText(sample, costOf(sample, null, Date.now()));
+
+      const sayType = await win.webContents.executeJavaScript('typeof window.__dshWhaleMoeSay');
+      check('页面暴露说话钩子 __dshWhaleMoeSay', sayType === 'function', sayType);
+
+      const said = await sayToPet(expected);
+      check('主进程调用说话钩子成功', said === true, String(said));
+
+      // 台词是逐字打出来的，等到打完（或超时）为止
+      let bubble = null;
+      const deadline = Date.now() + 6000;
+      while (Date.now() < deadline) {
+        bubble = await readBubble();
+        if (bubble && !bubble.hidden && bubble.text === expected) break;
+        await sleep(200);
+      }
+      check(
+        '气泡可见且文本与预期完全一致',
+        Boolean(bubble && !bubble.hidden && bubble.text === expected),
+        JSON.stringify(bubble) + ' expected=' + JSON.stringify(expected)
+      );
+
+      const image = await captureImage(win.webContents);
+      if (image) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, image.toPNG());
+        log('[say-probe] screenshot', target);
+      }
+
+      /*
+       * 阈值闸门：清空气泡后播报一个远低于阈值的花费，气泡里不应再出现 tokens。
+       * 注意断言的是"没有出现花费文案"，而不是"气泡保持隐藏"——
+       * 桌宠可能在等待期间自己冒一句日常台词（那是正常的），
+       * 拿 hidden 当条件会随机失败。
+       */
+      await win.webContents.executeJavaScript(`(() => {
+        const bubble = document.querySelector('[data-dsh-whale-bubble]');
+        const text = document.querySelector('[data-dsh-whale-bubble-text]');
+        if (text) text.textContent = '';
+        if (bubble) bubble.hidden = true;
+        return true;
+      })()`);
+      announceTurnCost({ usage: { inputTokens: 1, cacheReadTokens: 0, outputTokens: 1 }, reason: { kind: 'completed' } });
+      await sleep(900);
+      const after = await readBubble();
+      check(
+        '低于阈值的花费不播报',
+        Boolean(after) && !after.text.includes('tokens'),
+        JSON.stringify(after)
+      );
+      check('播报开关默认开启、阈值默认 0.01', config.costSay === true && config.costThreshold === 0.01, JSON.stringify({
+        costSay: config.costSay,
+        costThreshold: config.costThreshold,
+      }));
+    } catch (error) {
+      log('[say-probe] failed', error.message);
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    const expected = 5;
+    log(
+      '[say-probe]',
+      results.length !== expected
+        ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
+        : failed === 0
+          ? `DONE 全部 ${expected} 项通过`
+          : `DONE ${failed}/${expected} 项未通过`
+    );
+    app.exit(failed === 0 && results.length === expected ? 0 : 1);
+  }, 3500);
+}
+
 // ---------------------------------------------------------------- 设置窗口探针
 /**
  * 覆盖职责划分与设置窗口两件事：
@@ -1091,8 +1293,8 @@ function runSettingsProbe() {
           rows: [...document.querySelectorAll('.row .name')].map((n) => n.textContent.trim()),
         }))()`);
         check(
-          '设置窗口按分类展示（5 类）',
-          structure.sections.length === 5 && structure.sections.includes('天气与余额'),
+          '设置窗口按分类展示（6 类）',
+          structure.sections.length === 6 && structure.sections.includes('天气与余额') && structure.sections.includes('花费播报'),
           JSON.stringify(structure.sections)
         );
         const expectedRows = [
@@ -1101,9 +1303,14 @@ function runSettingsProbe() {
           '大小', '位置',
           '重新加载页面', '数据目录', '运行日志',
           '天气城市', '天气 API Key', '显示余额', '余额接口',
+          '播报本次花费', '播报阈值（元）', '单价（元/百万）',
         ];
         const missing = expectedRows.filter((name) => !structure.rows.includes(name));
         check('设置窗口含全部可配置项', missing.length === 0, missing.length ? JSON.stringify(missing) : `${structure.rows.length} 项`);
+
+        // 说话钩子：server.js 在返回 /pet/mascot.js 时注入的那一行（磁盘 vendor 未改）
+        const sayType = await win.webContents.executeJavaScript('typeof window.__dshWhaleMoeSay');
+        check('桌宠页面暴露说话钩子 __dshWhaleMoeSay', sayType === 'function', sayType);
 
         const [cw, ch] = settingsWin.getContentSize();
         const scrollH = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
@@ -1224,7 +1431,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 13;
+    const expected = 14;
     log(
       '[settings-probe]',
       results.length !== expected
@@ -1379,6 +1586,14 @@ function registerIpc() {
       if (typeof patch.autoLaunch === 'boolean') setAutoLaunch(patch.autoLaunch);
       if (typeof patch.followDsh === 'boolean') setFollowDsh(patch.followDsh);
       if (typeof patch.visible === 'boolean') setVisible(patch.visible);
+      // 花费播报：纯主进程行为，改完即生效，不需要重启或刷新页面
+      if (typeof patch.costSay === 'boolean') config.costSay = patch.costSay;
+      for (const key of ['costThreshold', 'costPriceHit', 'costPriceMiss', 'costPriceOutput']) {
+        if (patch[key] === undefined || patch[key] === null || patch[key] === '') continue;
+        const value = Number(patch[key]);
+        if (Number.isFinite(value) && value >= 0) config[key] = value;
+      }
+      saveConfig();
     }
     return { ...config };
   });
@@ -1397,6 +1612,16 @@ function registerIpc() {
   });
   ipcMain.on('shell:open-settings', () => openSettingsWindow());
   ipcMain.on('shell:open-growth', (_event, tab) => openGrowthWindow(tab));
+  /** 设置窗口的"测试播报"按钮：直接让她说一句，用来确认钩子在真实环境里可用。 */
+  ipcMain.handle('shell:say', async (_event, text) => {
+    const line = String(text ?? '').trim() || announceText(
+      { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 },
+      costOf({ inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 }, null, Date.now()),
+    );
+    const ok = await sayToPet(line);
+    log('[say] manual', ok ? 'ok' : 'unavailable', line);
+    return { ok, text: line };
+  });
 
   /*
    * 养成的两个动作必须回到桌宠页面执行：领取任务要跑 applyGrowth / 成就算 /
@@ -1461,6 +1686,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
         petDir: PET_DIR,
         vendorDir: VENDOR_DIR,
         port: PORT_OVERRIDE ?? config.port,
+        log: (...parts) => log(...parts),
         stateProvider: () => ({
           interactive: shellState.interactive,
           ignoreMouseEvents: !shellState.interactive,

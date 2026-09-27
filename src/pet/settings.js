@@ -148,6 +148,98 @@
     );
 
     renderEnvGroup();
+    renderCostGroup(config);
+  }
+
+  // ---------------------------------------------------------------- 4. 花费播报
+  /**
+   * 任务结束后她用一句台词报"这次花了多少 tokens、约多少钱"。
+   *
+   * 数据来源是 DSH 会话文件里每条 assistant/message 带的 usage，按 turn 累加；
+   * 计费规则在 src/pricing.js（峰谷价、缓存命中/未命中分开计价）。
+   * 阈值以下的零头不播报，避免每做一件小事都刷屏。
+   */
+  function renderCostGroup(config) {
+    const group = document.getElementById('group-cost');
+
+    function numberInput(value, step, onCommit, className) {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.className = className || 'text-input num-input';
+      input.min = '0';
+      input.step = step;
+      input.value = String(value);
+      input.addEventListener('change', () => {
+        const parsed = Number(input.value);
+        if (Number.isFinite(parsed) && parsed >= 0) onCommit(parsed);
+        else input.value = String(value);
+      });
+      input.addEventListener('click', (event) => event.preventDefault());
+      return input;
+    }
+
+    function numberRow(label, hint, value, step, onCommit) {
+      return row(label, hint, numberInput(value, step, onCommit));
+    }
+
+    /*
+     * 三个单价挤在一行里：它们是一组同质参数，各占一行只是把窗口撑高。
+     * （窗口高度是量出来的，多一行就真的多一行的高度。）
+     */
+    function priceRow() {
+      const wrap = document.createElement('div');
+      wrap.className = 'price-group';
+      const specs = [
+        ['命中', 'costPriceHit', 0.01],
+        ['未命中', 'costPriceMiss', 0.1],
+        ['输出', 'costPriceOutput', 0.1],
+      ];
+      for (const [label, key, step] of specs) {
+        const cell = document.createElement('label');
+        cell.className = 'mini';
+        const caption = document.createElement('span');
+        caption.textContent = label;
+        cell.append(caption, numberInput(config[key], step, (v) => applyConfig({ [key]: v }), 'num-input mini-input'));
+        wrap.append(cell);
+      }
+      return row('单价（元/百万）', '命中 / 未命中 / 输出；工作日 9:00-12:00、14:00-18:00 按 2 倍估算', wrap);
+    }
+
+    const probe = document.createElement('span');
+    probe.className = 'hint';
+    const testButton = actionButton('测试播报', async () => {
+      if (typeof api.say !== 'function') return;
+      testButton.disabled = true;
+      probe.textContent = '已发送…';
+      try {
+        const result = await api.say('');
+        probe.textContent = result && result.ok ? `✓ 她说了：${result.text}` : '✗ 说话钩子不可用（看运行日志）';
+      } catch (error) {
+        probe.textContent = `✗ ${error.message}`;
+      } finally {
+        testButton.disabled = false;
+      }
+    });
+    const testRow = document.createElement('div');
+    testRow.className = 'row';
+    const testText = document.createElement('div');
+    testText.className = 'text';
+    testText.append(Object.assign(document.createElement('div'), { className: 'name', textContent: '测试' }));
+    testText.append(probe);
+    testRow.append(testText, testButton);
+
+    group.append(
+      row(
+        '播报本次花费',
+        '每次任务结束时她说一句"这次任务花了多少 tokens、约多少钱"',
+        toggle(config.costSay, (on) => applyConfig({ costSay: on }))
+      ),
+      numberRow('播报阈值（元）', '低于这个金额就不打扰，默认 0.01（一分钱）', config.costThreshold, 0.01, (v) =>
+        applyConfig({ costThreshold: v })
+      ),
+      priceRow(),
+      testRow
+    );
   }
 
   // ---------------------------------------------------------------- 3. 天气与余额

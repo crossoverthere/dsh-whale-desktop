@@ -16,4 +16,6 @@ contextBridge.exposeInMainWorld('whaleSettings', {
   openDataDir: () => ipcRenderer.send('shell:open-path', 'data'),
   openLog: () => ipcRenderer.send('shell:open-path', 'log'),
   appInfo: () => ipcRenderer.invoke('shell:app-info'),
+  /** 让她说一句话（设置窗口的"测试播报"按钮）。 */
+  say: (text) => ipcRenderer.invoke('shell:say', text),
 });

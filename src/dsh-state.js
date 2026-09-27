@@ -99,13 +99,17 @@ function parseRecords(text) {
 
 class DshStateWatcher {
   /**
-   * @param {{ intervalMs?: number, idleAfterMs?: number, flashMs?: number, onChange?: (s: object) => void, log?: Function }} options
+   * @param {{ intervalMs?: number, idleAfterMs?: number, flashMs?: number, sessionsRoot?: string, onChange?: (s: object) => void, onTurnEnd?: Function, log?: Function }} options
    */
   constructor(options = {}) {
     this.intervalMs = options.intervalMs ?? 400;
     this.idleAfterMs = options.idleAfterMs ?? DEFAULT_IDLE_AFTER_MS;
     this.flashMs = options.flashMs ?? DEFAULT_FLASH_MS;
+    /** 会话目录；单测指到临时目录就能脱离真实 DSH 验证（见 scripts/test-cost.mjs）。 */
+    this.root = options.sessionsRoot ?? sessionsRoot();
     this.onChange = options.onChange ?? (() => {});
+    /** 一个 turn 结束时回调：{ turn, usage, reason, at }，用于"本次任务花费"播报。 */
+    this.onTurnEnd = options.onTurnEnd ?? (() => {});
     this.log = options.log ?? (() => {});
 
     this.timer = null;
@@ -119,6 +123,16 @@ class DshStateWatcher {
     this.flashUntil = 0;
     this.state = { state: 'idle', tool: null, turn: null, at: 0, session: null, source: 'none' };
     this.scanAt = 0;
+    /** 当前 turn 累计的 token 用量（用于花费播报）。 */
+    this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
+    /**
+     * 是否已完成首次"追平历史"。
+     * 启动时会把整份历史读一遍，里面全是历史 turn/end —— 不加这道闸就会在开机瞬间
+     * 把过去每一个任务都播报一遍。
+     */
+    this.primed = false;
+    /** 最近一次读到的新鲜文件大小（poll 里 scan 的 this.size 可能已过期）。 */
+    this.lastStatSize = 0;
   }
 
   start() {
@@ -150,7 +164,7 @@ class DshStateWatcher {
     // 会话文件查找不必每轮都做：目录扫描比解帧贵
     if (!this.filePath || now - this.scanAt > 3000) {
       this.scanAt = now;
-      const found = findActiveSession();
+      const found = findActiveSession(this.root);
       if (!found) {
         this.publish({ state: 'idle', tool: null, at: now, session: null, source: 'none' });
         return;
@@ -164,6 +178,13 @@ class DshStateWatcher {
         this.toolName = null;
         this.flash = null;
         this.flashUntil = 0;
+        /*
+         * 换会话文件要重新"追平"：新文件里已有的历史 turn/end 同样是历史，
+         * 不把 primed 清掉就会在切换会话的瞬间把旧账播一遍。
+         */
+        this.primed = false;
+        this.lastStatSize = 0;
+        this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
       }
       this.size = found.size;
       this.mtimeMs = found.mtimeMs;
@@ -171,6 +192,10 @@ class DshStateWatcher {
     }
 
     this.readNewRecords();
+    // 追平历史之后才允许播报（否则会把过去每个 turn 都播一遍）
+    if (this.lastStatSize > 0 && this.offset >= this.lastStatSize) {
+      this.primed = true;
+    }
     this.recompute(now);
   }
 
@@ -188,6 +213,7 @@ class DshStateWatcher {
       this.inTurn = false;
       this.lastType = null;
     }
+    this.lastStatSize = stat.size;
     if (stat.size === this.offset) return;
 
     let buffer;
@@ -243,16 +269,41 @@ class DshStateWatcher {
       const type = record.type;
       const data = record.data ?? {};
       if (typeof record.time === 'number') this.lastRecordAt = Math.max(this.lastRecordAt, record.time);
+
+      // token 用量：每条 assistant/message 都带一份，按当前 turn 累加
+      if (data.usage) {
+        const u = data.usage;
+        this.turnUsage.inputTokens += Number(u.inputTokens) || 0;
+        this.turnUsage.cacheReadTokens += Number(u.cacheReadTokens) || 0;
+        this.turnUsage.outputTokens += Number(u.outputTokens) || 0;
+        // 注意：reasoningTokens 是 outputTokens 的子集，不能再加
+        this.turnUsage.messages += 1;
+      }
+
       switch (type) {
         case 'turn/start':
           this.inTurn = true;
           this.turn = data.turn ?? null;
+          this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
           break;
-        case 'turn/end':
+        case 'turn/end': {
           this.inTurn = false;
           this.flash = data.reason && data.reason.kind === 'completed' ? 'success' : 'failure';
           this.flashUntil = Date.now() + this.flashMs;
+          const usage = this.turnUsage;
+          const hadUsage = usage.messages > 0;
+          this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
+          // primed 之前是在读历史，不播报
+          if (this.primed && hadUsage) {
+            this.onTurnEnd({
+              turn: data.turn ?? this.turn ?? null,
+              usage,
+              reason: data.reason ?? null,
+              at: Date.now(),
+            });
+          }
           break;
+        }
         case 'tool/call':
           this.toolName = typeof data.name === 'string' ? data.name : null;
           break;

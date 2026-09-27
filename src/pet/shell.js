@@ -678,6 +678,12 @@
         weather: hudReadWeather(),
         balance: hudReadBalance(),
       },
+      /*
+       * 说话钩子是否就位（server.js 注入的那一行）。上报它的理由和 hud 一样：
+       * "花费播报"是主进程→页面的单向调用，页面没反应时无法从外部区分
+       * "钩子没注入"和"话说出来了但看不见"，把可用性带出来就能一眼分辨。
+       */
+      sayHook: typeof window.__dshWhaleMoeSay === 'function',
     });
   }
 

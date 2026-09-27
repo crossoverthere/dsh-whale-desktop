@@ -55,10 +55,43 @@ function sendFile(res, file) {
 }
 
 /**
- * @param {{ petDir: string, vendorDir: string, port: number, stateProvider?: () => unknown }} opts
+ * 给上游桌宠脚本打**一行**运行时补丁，对外暴露"显示任意台词"的入口。
+ *
+ * 上游没有对外暴露说话钩子（内部只有 `showLineNow(line)`），而"本次任务花费"这类
+ * 动态台词必须能主动让她开口。做法与上游自己的 DSH 插件一致：取文本 → 字符串替换 →
+ * 再交给浏览器 —— **磁盘上的 vendor/whale 一个字都不改**，所以 `npm run sync:upstream`
+ * 不会把补丁冲掉。
+ *
+ * 锚点 `root.__dshWhaleMoeStarted = true;` 在 start() 里且全文唯一；
+ * 万一上游改掉了这个锚点，这里会原样返回并把 patched 标成 false，
+ * 页面上 `__dshWhaleMoeSay` 就不存在 —— 调用方据此降级，不会静默出错。
+ */
+const MASCOT_PATCH_ANCHOR = 'root.__dshWhaleMoeStarted = true;';
+let mascotCache = null;
+
+function loadPatchedMascot(vendorDir) {
+  const file = path.join(vendorDir, 'dsh-whale-moe.js');
+  const stat = fs.statSync(file);
+  if (mascotCache && mascotCache.mtimeMs === stat.mtimeMs) return mascotCache;
+  const original = fs.readFileSync(file, 'utf8');
+  let body = original;
+  let patched = false;
+  if (original.includes(MASCOT_PATCH_ANCHOR)) {
+    body = original.replace(
+      MASCOT_PATCH_ANCHOR,
+      `root.__dshWhaleMoeSay = showLineNow; /* shell-patched: 暴露说话钩子 */\n    ${MASCOT_PATCH_ANCHOR}`,
+    );
+    patched = true;
+  }
+  mascotCache = { mtimeMs: stat.mtimeMs, body, patched, logged: false };
+  return mascotCache;
+}
+
+/**
+ * @param {{ petDir: string, vendorDir: string, port: number, stateProvider?: () => unknown, log?: Function }} opts
  * @returns {Promise<{ url: string, port: number, close: () => Promise<void> }>}
  */
-function startPetServer({ petDir, vendorDir, port, stateProvider }) {
+function startPetServer({ petDir, vendorDir, port, stateProvider, log = () => {} }) {
   const server = http.createServer((req, res) => {
     // 自检端点：把"当前是否接管鼠标 / 桌宠矩形"暴露给外部脚本，
     // 这样点击穿透逻辑可以被自动化验证，而不是只能靠肉眼。
@@ -78,6 +111,30 @@ function startPetServer({ petDir, vendorDir, port, stateProvider }) {
 
     if (pathname === '/' || pathname === '/index.html') {
       return sendFile(res, path.join(petDir, 'index.html'));
+    }
+
+    // 桌宠脚本：与 /assets/ 同一份文件，但会运行时注入说话钩子
+    if (pathname === '/pet/mascot.js') {
+      try {
+        const entry = loadPatchedMascot(vendorDir);
+        if (!entry.logged) {
+          entry.logged = true;
+          log(
+            entry.patched
+              ? '[server] 桌宠脚本已注入说话钩子（磁盘文件未修改）'
+              : '[server] 警告：未找到说话钩子锚点，已按原样提供',
+          );
+        }
+        res.writeHead(200, {
+          'Content-Type': MIME['.js'],
+          'Cache-Control': 'no-cache',
+          'X-Shell-Say-Hook': entry.patched ? '1' : '0',
+        });
+        return res.end(entry.body);
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': MIME['.txt'] });
+        return res.end(String(error && error.message));
+      }
     }
 
     // 桌宠本体：/assets/* → vendor/whale/*

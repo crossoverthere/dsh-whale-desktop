@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 'use strict';
 
-/** 校验 vendor/whale/ 是否完整；缺失时给出修复命令。 */
+/** 校验 vendor/whale/ 是否完整；缺失时给出修复命令。
+ *
+ * 注意：本文件是 ESM（`.mjs`），没有 `require` / `__dirname` ——
+ * 早期版本用了 CommonJS 的写法，于是这条命令一直是一跑就崩
+ * （ReferenceError: require is not defined），等于校验形同虚设。 */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const fs = require('node:fs');
-const path = require('node:path');
-
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VENDOR = path.join(ROOT, 'vendor', 'whale');
 
 const REQUIRED = ['dsh-whale-moe.css', 'dsh-whale-moe.js', 'whale-moe-core.js', 'peek-calibration.json'];

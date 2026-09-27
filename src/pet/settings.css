@@ -32,24 +32,27 @@ body {
 }
 
 body {
-  padding: 14px 16px 12px;
-  font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  padding: 10px 14px 8px;
+  /* 1.45 而不是 1.5：这个窗口有近 20 行，行高每省 0.05 就是十几像素 */
+  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--fg);
   background: var(--bg);
-  overflow: hidden;
+  /* 兜底：高度由主进程按内容量好后设定；万一量失败，宁可出现滚动条也不要裁掉设置项 */
+  overflow-x: hidden;
+  overflow-y: auto;
   -webkit-user-select: none;
   user-select: none;
 }
 
 h1 {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.3px;
 }
 
 h2 {
-  margin: 0 0 6px 2px;
+  margin: 0 0 5px 2px;
   font-size: 11px;
   font-weight: 600;
   color: var(--fg-dim);
@@ -57,14 +60,14 @@ h2 {
 }
 
 section {
-  margin-bottom: 14px;
+  margin-bottom: 7px;
 }
 
-/* 双列：4 个分类单列排下来近 900px，太高了；两列约 500px */
+/* 双列：6 个分类单列排下来近 1300px，太高了；两列约 660px */
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0 14px;
+  gap: 0 12px;
   align-items: start;
 }
 
@@ -73,8 +76,8 @@ section {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 7px;
-  padding: 9px 11px;
+  margin-bottom: 4px;
+  padding: 6px 10px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -93,8 +96,8 @@ label.row {
 }
 
 .hint {
-  margin-top: 2px;
-  font-size: 11px;
+  margin-top: 1px;
+  font-size: 10px;
   color: var(--fg-dim);
 }
 
@@ -143,7 +146,7 @@ select {
 }
 
 .text-input {
-  flex: 0 1 150px;
+  flex: 0 1 190px;
   min-width: 90px;
   padding: 4px 7px;
   font: inherit;
@@ -151,6 +154,32 @@ select {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+.num-input {
+  flex: 0 0 84px;
+}
+
+/* 一组同质数字挤一行（三个单价），避免各占一行把窗口撑高 */
+.price-group {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.mini {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.mini-input {
+  flex: 0 0 auto;
+  width: 66px;
+  padding: 3px 5px;
 }
 
 .action {

@@ -29,8 +29,11 @@
   <script src="/pet/preshim.js"></script>
   <!-- 上游纯函数状态机，必须先于表现层 -->
   <script src="/assets/whale-moe-core.js"></script>
-  <!-- 上游桌宠本体：自己 appendChild 到 body，自己读 localStorage 定位 -->
-  <script src="/assets/dsh-whale-moe.js"></script>
+  <!-- 上游桌宠本体：自己 appendChild 到 body，自己读 localStorage 定位。
+       走 /pet/mascot.js 而不是 /assets/…：服务器会在返回前注入一行
+       `root.__dshWhaleMoeSay = showLineNow`（磁盘上的 vendor 文件未改），
+       这样"本次任务花费"这类动态台词才能主动让她开口。 -->
+  <script src="/pet/mascot.js"></script>
   <!-- 壳胶水：点击穿透判定 + 日志回传 -->
   <script src="/pet/shell.js"></script>
 </body>

@@ -25,8 +25,11 @@ Electron 主进程 (src/main.js)
   ├─ 启动本地服务器 (src/server.js)  http://127.0.0.1:38911
   │    ├─ /                → src/pet/index.html
   │    ├─ /assets/*        → vendor/whale/*      ← 上游原样
+  │    ├─ /pet/mascot.js   → vendor/whale/dsh-whale-moe.js + 一行说话钩子（见 6.5）
   │    ├─ /pet/*           → src/pet/*
   │    └─ /__shell/state   → 自检端点（JSON）
+  ├─ 读 DSH 会话文件 (src/dsh-state.js) → 工作状态 + 每个 turn 的 token 用量
+  │    └─ turn 结束 → src/pricing.js 算钱 → 调页面里的说话钩子（见 6.5）
   ├─ 创建铺满工作区的透明置顶窗口，默认 setIgnoreMouseEvents(true, {forward:true})
   └─ 托盘 / 全局快捷键 / IPC
 
@@ -413,12 +416,90 @@ npm run dsh:probe    # 走真实 IPC 推状态，读上游 __dshWhaleMoeDebug �
 curl http://127.0.0.1:38911/__shell/state   # 其中 dsh 字段即会话文件读到的状态
 ```
 
+## 6.5 任务花费播报：运行时注入一个"说话"钩子
+
+需求：每个任务结束时她开口报"这次花了多少 tokens、约多少钱"。
+这件事有三段，分别落在三个文件里。
+
+### 6.5.1 用量：会话文件里已经有了
+
+会话文件每条 `assistant/message` 都带 `usage`：
+
+```json
+{ "inputTokens": 352, "cacheReadTokens": 1540992, "outputTokens": 5164, "reasoningTokens": 4132 }
+```
+
+两个**必须**记住的点（写错都不会报错，只是数字不对）：
+
+1. `totalTokens = inputTokens + cacheReadTokens + outputTokens`（实测精确成立）
+2. `reasoningTokens` 是 `outputTokens` 的**子集**，再加一遍就重复计费
+
+`src/dsh-state.js` 按 `turn/start` … `turn/end` 累加，`turn/end` 时通过 `onTurnEnd` 回调
+交给主进程。
+
+### 6.5.2 计价：`src/pricing.js`（纯函数）
+
+| 项 | 单价（元/百万 tokens） |
+| --- | --- |
+| 输入·缓存命中 | 0.02 |
+| 输入·缓存未命中 | 1 |
+| 输出 | 4 |
+
+工作日 9:00-12:00、14:00-18:00（北京时间）**翻倍**。
+缓存命中与未命中相差 50 倍，**必须分开算**；混算会把 5 分钱算成两块多。
+峰谷判定只按周一至周五 + 时段，**不处理法定节假日**（那几天会高估一倍，已知限制）。
+
+### 6.5.3 说话：上游没有对外的入口，所以注入一行
+
+上游内部只有 `showLineNow(line)`，没有任何 `window.__dshWhaleMoeSay` 之类的出口
+（`__dshWhaleMoeDebug / Weather / Balance / IdleChat / ClaimQuest / ApplyBadge` 都有，
+就是没有说话）。三条路：
+
+| 方案 | 结论 |
+| --- | --- |
+| ① 运行时在返回脚本时注入一行，暴露 `showLineNow` | **采用** |
+| ② 壳自己画一个气泡 | 会与上游气泡打架（两套定位/动画/隐藏时机） |
+| ③ 直接改 `vendor/whale/dsh-whale-moe.js` | 否决：`npm run sync:upstream` 会把它冲掉 |
+
+做法在 `src/server.js`：`/pet/mascot.js` 与 `/assets/dsh-whale-moe.js` 是**同一份文件**，
+只是前者返回前做一次字符串替换：
+
+```js
+root.__dshWhaleMoeSay = showLineNow;   // 插在 root.__dshWhaleMoeStarted = true; 之前
+```
+
+这与上游 DSH 插件自己的做法一致（取文本 → 替换 → 注入），但**磁盘上的 vendor 文件不动**，
+所以 vendor 校验与上游同步都不受影响。锚点缺失时注入失败：打警告日志、原样返回、
+`X-Shell-Say-Hook: 0`，页面上没有钩子，主进程据此降级成"只写日志"。
+
+### 6.5.4 防刷屏与重启友好
+
+- **历史 turn 一律不播报**：启动时会把整份历史读一遍，里面全是旧的 `turn/end`。
+  加了一道 `primed` 闸门 —— 只有 `offset` 追平过文件尾之后到达的 `turn/end` 才播报。
+  切换会话文件时 `primed` 会重置（新文件里的旧账同样不能播）。
+- **中途重启不漏账**：`turnUsage` 在每次 `turn/start` 与 `turn/end` 后归零，
+  所以"追平历史"结束时它恰好等于**当前进行中 turn** 已累计的用量，直接保留即可。
+- **阈值**：低于 `costThreshold`（默认 0.01 元）不播报，连日志都只留一行。
+
+### 6.5.5 验证
+
+```bash
+npm run test:cost    # 17 项离线断言：计价/峰谷/阈值/格式化/turn 累加/闸门
+npm run say:probe    # 5 项端到端断言：可见气泡里的完整文本 + 低阈值不播报
+```
+
+`say:probe` 断言的是**气泡里可见的完整文本**，而不是"window 上有个函数" ——
+钩子存在 ≠ 话说得出来（气泡节点可能没建、台词可能被 `localizeLine` 改写、
+气泡可能没被取消隐藏）。台词是逐字打出来的，所以探针会轮询到文本打满为止。
+
 ## 7. 调试手段（看不到屏幕时靠这些）
 
 ```bash
 npm run shot        # 启动 → 等 5 秒 → 截图 → 打印 DOM 状态 → 退出
 npm run shot -- --shot-delay=8000 --shot=D:\tmp\a.png
 npm run menu:probe  # 右键菜单越界探针（打印溢出像素 + PASS/FAIL + 截图）
+npm run say:probe   # 让她说一句样本并断言气泡文本（花费播报链路）
+npm run test:cost   # 计价与播报闸门单测（不需要 Electron）
 npm run verify:shell   # 自动验证点击穿透（会真的移动指针，跑完还原）
 ```
 
@@ -480,11 +561,12 @@ npm i -D electron-builder
 
 ## 10. 路线图 / 已知限制
 
-- **工作状态联动**：上游靠 `MutationObserver` 观察 DSH 页面 DOM 来判断"正在跑工具"。
-  独立宿主没有那个 DOM，需要另接信号源（DSH 事件流、或本地钩子）。
-  壳已预留通道：`preload.js` 暴露了 `onBusy`，主进程可向页面推 `shell:busy`。
+- **花费播报的估算误差**：不处理中国法定节假日（那几天会按高峰价高估一倍）；
+  跨峰谷的长任务只给一个估算值；一个 turn 内的全部记录都计入，**包括子代理**。
 - **多显示器**：当前只铺主显示器工作区。
 - **全屏应用**：窗口是 `alwaysOnTop` 的整屏透明层，看全屏视频/游戏时建议
   用 `Alt+Shift+W` 或托盘临时隐藏。
 - **不参与 DSH 的设置面板**：上游的设置面板是 DSH 客户端插件（`lib/client.js`），
-  独立运行时用桌宠自带的齿轮菜单 ⚙，功能覆盖开关/大小/天气/养成数据。
+  独立运行时用桌宠自带的齿轮菜单 ⚙ 与壳的独立设置窗口。
+- **`main.js` 里 `openSettingsWindow` 没走 `createAuxWindow` helper**：
+  逻辑等价但重复了一份，下次改设置窗口时顺手迁移，别让两份实现漂移。
