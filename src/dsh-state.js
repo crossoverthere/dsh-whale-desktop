@@ -128,6 +128,8 @@ class DshStateWatcher {
     this.flash = null;
     this.flashUntil = 0;
     this.state = { state: 'idle', tool: null, turn: null, at: 0, session: null, source: 'none' };
+    /** 最近一次请求头里看到的模型名（价目表按模型取价）。 */
+    this.model = null;
     this.scanAt = 0;
     /** 当前 turn 累计的 token 用量（用于花费播报）。 */
     this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
@@ -162,7 +164,7 @@ class DshStateWatcher {
 
   /** 当前状态快照（供 /__shell/state 使用）。 */
   snapshot() {
-    return { ...this.state };
+    return { ...this.state, model: this.model };
   }
 
   poll() {
@@ -316,6 +318,8 @@ class DshStateWatcher {
               at: typeof record.time === 'number' ? record.time : Date.now(),
               session: this.filePath ? path.basename(path.dirname(this.filePath)) : null,
               historical: !this.primed,
+              // 这个 turn 用的模型（价目表按模型取价；没读到就是 null）
+              model: this.model || null,
             });
           }
           break;
@@ -323,6 +327,20 @@ class DshStateWatcher {
         case 'tool/call':
           this.toolName = typeof data.name === 'string' ? data.name : null;
           break;
+        /*
+         * 当前用的是哪个模型：`request/header` 里带着
+         *   data.header.config = { provider, model, reasoningEffort, maxTokens }
+         * （`assistant/message` 里没有模型名，只有这处有）
+         * 价目表要按模型取价，所以顺手记下来，随 onTurnEnd 一起交出去。
+         */
+        case 'request/header': {
+          const model = data.header && data.header.config ? data.header.config.model : null;
+          if (typeof model === 'string' && model) {
+            if (this.model !== model) this.log('[dsh] model', model);
+            this.model = model;
+          }
+          break;
+        }
         case 'tool/result':
           if (data.error) {
             this.flash = 'failure';

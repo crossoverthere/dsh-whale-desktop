@@ -14,10 +14,26 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { createRequire } from 'node:module';
+import { parsePricingPage } from './refresh-prices.mjs';
 
 const require = createRequire(import.meta.url);
 const pricing = require('../src/pricing.js');
+const priceTable = require('../src/price-table.js');
 const { DshStateWatcher } = require('../src/dsh-state.js');
+
+/** 仓库里那份价目表（与运行时读的是同一个文件）。 */
+const TABLE = priceTable.loadTable();
+/** 手动配置的样例值（= flash 的空闲价，方便对照）。 */
+const MANUAL = { cacheHitPerM: 0.02, cacheMissPerM: 1, outputPerM: 4 };
+/** 周六 12:00（北京）—— 空闲时段 */
+const OFFPEAK = Date.UTC(2026, 0, 3, 4, 0, 0);
+/** 周一 10:00（北京）—— 高峰时段 */
+const PEAK = Date.UTC(2026, 0, 5, 2, 0, 0);
+
+/** 某个模型在某个时刻的单价（先按表，表里没有就手动配置 —— 与运行时同一函数）。 */
+function ratesAt(model, at) {
+  return priceTable.resolveRates({ table: TABLE, model, manual: MANUAL, at }).rates;
+}
 
 let passed = 0;
 const failures = [];
@@ -42,19 +58,17 @@ check('样本用量总 tokens = 1,546,508', () => {
   assert.equal(pricing.totalTokens(SAMPLE), 352 + 1540992 + 5164);
 });
 
-check('空闲时段单价与手算一致', () => {
-  // 非高峰时刻：2026-01-03 是周六
-  const at = Date.UTC(2026, 0, 3, 4, 0, 0);
-  const cost = pricing.costOf(SAMPLE, null, at);
+check('空闲时段单价与手算一致（flash，价格来自 pricing.json）', () => {
+  const cost = pricing.costOf(SAMPLE, ratesAt('deepseek-flash', OFFPEAK));
   const expected = (352 * 1 + 1540992 * 0.02 + 5164 * 4) / 1e6;
   assert.ok(Math.abs(cost - expected) < 1e-9, `${cost} != ${expected}`);
   // 手算：0.000352 + 0.03081984 + 0.020656 = 0.05182784
   assert.ok(Math.abs(cost - 0.05182784) < 1e-8, String(cost));
 });
 
-check('高峰时段正好翻倍', () => {
-  const offPeak = pricing.costOf(SAMPLE, null, Date.UTC(2026, 0, 3, 4, 0, 0)); // 周六
-  const peak = pricing.costOf(SAMPLE, null, Date.UTC(2026, 0, 5, 2, 0, 0)); // 周一 10:00 北京
+check('高峰时段正好翻倍（表里 idle/peak 两组数各自独立写死）', () => {
+  const offPeak = pricing.costOf(SAMPLE, ratesAt('deepseek-flash', OFFPEAK));
+  const peak = pricing.costOf(SAMPLE, ratesAt('deepseek-flash', PEAK));
   assert.ok(Math.abs(peak - offPeak * 2) < 1e-9, `${peak} vs ${offPeak}`);
 });
 
@@ -71,23 +85,22 @@ check('峰谷判定：工作日 9-12/14-18 为峰，午休与夜间为谷', () =
 });
 
 check('缓存命中/未命中分开计价（混算会高估 ~50 倍）', () => {
-  const at = Date.UTC(2026, 0, 3, 4, 0, 0);
-  const onlyMiss = pricing.costOf({ inputTokens: 1e6 }, null, at);
-  const onlyHit = pricing.costOf({ cacheReadTokens: 1e6 }, null, at);
+  const rates = ratesAt('deepseek-flash', OFFPEAK);
+  const onlyMiss = pricing.costOf({ inputTokens: 1e6 }, rates);
+  const onlyHit = pricing.costOf({ cacheReadTokens: 1e6 }, rates);
   assert.ok(Math.abs(onlyMiss - 1) < 1e-9, String(onlyMiss));
   assert.ok(Math.abs(onlyHit - 0.02) < 1e-9, String(onlyHit));
 });
 
 check('reasoningTokens 不参与累加（它是 output 的子集）', () => {
-  const at = Date.UTC(2026, 0, 3, 4, 0, 0);
-  const withReasoning = pricing.costOf({ outputTokens: 1000, reasoningTokens: 900 }, null, at);
-  const withoutReasoning = pricing.costOf({ outputTokens: 1000 }, null, at);
+  const rates = ratesAt('deepseek-flash', OFFPEAK);
+  const withReasoning = pricing.costOf({ outputTokens: 1000, reasoningTokens: 900 }, rates);
+  const withoutReasoning = pricing.costOf({ outputTokens: 1000 }, rates);
   assert.equal(withReasoning, withoutReasoning);
 });
 
-check('单价可被配置覆盖', () => {
-  const at = Date.UTC(2026, 0, 3, 4, 0, 0);
-  const cost = pricing.costOf({ inputTokens: 1e6 }, { cacheMissPerM: 2 }, at);
+check('单价可被覆盖（未给的项退回兜底价）', () => {
+  const cost = pricing.costOf({ inputTokens: 1e6 }, { cacheMissPerM: 2 });
   assert.ok(Math.abs(cost - 2) < 1e-9, String(cost));
 });
 
@@ -105,7 +118,7 @@ check('非法值当作不播报（NaN 不能变成"永远播报"）', () => {
 });
 
 check('文案：token 用万/亿，小额金额保留 4 位小数', () => {
-  const cost = pricing.costOf(SAMPLE, null, Date.UTC(2026, 0, 3, 4, 0, 0));
+  const cost = pricing.costOf(SAMPLE, ratesAt('deepseek-flash', OFFPEAK));
   const text = pricing.announceText(SAMPLE, cost);
   assert.equal(text, '这次任务花了 154.7 万 tokens，约 ¥0.0518');
 });
@@ -192,7 +205,7 @@ check('追平之后新增的 turn 会播报，且用量按 turn 累加', () => {
   assert.deepEqual(live[0].usage, { inputTokens: 201, cacheReadTokens: 3000, outputTokens: 42, messages: 2 });
   assert.equal(live[0].turn, 2);
   assert.equal(live[0].reason.kind, 'completed');
-  const cost = pricing.costOf(live[0].usage, null, Date.now());
+  const cost = pricing.costOf(live[0].usage, ratesAt('deepseek-flash', OFFPEAK));
   assert.ok(cost > 0 && Number.isFinite(cost), String(cost));
 });
 
@@ -367,6 +380,121 @@ check('日期键用本地日期（不是 UTC）', () => {
 });
 
 fs.rmSync(ledgerDir, { recursive: true, force: true });
+
+// ---------------------------------------------------------------- 5. 价目表
+console.log('[5] 价目表（pricing.json + 刷新脚本的解析器）');
+
+/** 本节自己的临时目录（第 3 节的 tmp 已经删掉了）。 */
+const pricingTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-pricing-test-'));
+
+check('仓库里的价目表能读出来，且 flash 的空闲/高峰价与官方一致', () => {
+  assert.equal(TABLE.ok, true, JSON.stringify(TABLE));
+  const flash = TABLE.models['deepseek-flash'];
+  assert.deepEqual(
+    { hit: flash.cacheHit.idle, miss: flash.cacheMiss.idle, out: flash.output.idle },
+    { hit: 0.02, miss: 1, out: 4 }
+  );
+  assert.deepEqual(
+    { hit: flash.cacheHit.peak, miss: flash.cacheMiss.peak, out: flash.output.peak },
+    { hit: 0.04, miss: 2, out: 8 }
+  );
+  assert.ok(TABLE.updatedAt, '价目表要带更新日期');
+  assert.ok(TABLE.source.includes('deepseek.com'), TABLE.source);
+});
+
+check('按模型取价：flash / v4-pro 各自一套，未知模型回落手动配置', () => {
+  const flash = ratesAt('deepseek-flash', OFFPEAK);
+  assert.deepEqual(flash, { cacheHitPerM: 0.02, cacheMissPerM: 1, outputPerM: 4 });
+  const pro = ratesAt('deepseek-v4-pro', OFFPEAK);
+  assert.deepEqual(pro, { cacheHitPerM: 0.15, cacheMissPerM: 4.5, outputPerM: 13.5 });
+  const unknown = priceTable.resolveRates({ table: TABLE, model: 'gpt-something', manual: MANUAL, at: OFFPEAK });
+  assert.equal(unknown.source, 'manual');
+  assert.deepEqual(unknown.rates, MANUAL);
+});
+
+check('取价时把峰谷算进去：同一模型高峰用 peak 那一档', () => {
+  const idle = priceTable.resolveRates({ table: TABLE, model: 'deepseek-v4-pro', manual: MANUAL, at: OFFPEAK });
+  const peak = priceTable.resolveRates({ table: TABLE, model: 'deepseek-v4-pro', manual: MANUAL, at: PEAK });
+  assert.equal(idle.peak, false);
+  assert.equal(peak.peak, true);
+  assert.deepEqual(peak.rates, { cacheHitPerM: 0.3, cacheMissPerM: 9, outputPerM: 27 });
+});
+
+check('旧模型名走别名（官方说仍可调用，按 Flash 计费）', () => {
+  const hit = priceTable.lookupModel(TABLE, 'deepseek-v4-flash');
+  assert.equal(hit && hit.key, 'deepseek-flash');
+  assert.equal(hit.matchedBy, 'alias');
+  const resolved = priceTable.resolveRates({ table: TABLE, model: 'deepseek-v4-flash', manual: MANUAL, at: OFFPEAK });
+  assert.equal(resolved.source, 'table');
+  assert.deepEqual(resolved.rates, { cacheHitPerM: 0.02, cacheMissPerM: 1, outputPerM: 4 });
+  // 大小写不敏感
+  assert.equal(priceTable.lookupModel(TABLE, 'DeepSeek-Flash').key, 'deepseek-flash');
+});
+
+check('价目表文件坏了也不崩：回落手动配置', () => {
+  const broken = priceTable.loadTable(path.join(os.tmpdir(), 'definitely-not-here.json'));
+  assert.equal(broken.ok, false);
+  const resolved = priceTable.resolveRates({ table: broken, model: 'deepseek-flash', manual: MANUAL, at: OFFPEAK });
+  assert.equal(resolved.source, 'manual');
+  assert.deepEqual(resolved.rates, MANUAL);
+});
+
+check('手动配置在高峰时段按统一倍率放大', () => {
+  const resolved = priceTable.resolveRates({ table: TABLE, model: 'unknown-model', manual: MANUAL, at: PEAK });
+  assert.deepEqual(resolved.rates, { cacheHitPerM: 0.04, cacheMissPerM: 2, outputPerM: 8 });
+});
+
+// --- 刷新脚本的解析器：用裁剪过的真实结构做夹具（离线可测） ---
+const PRICING_HTML = `
+<table>
+  <tr><td>模型细节</td></tr>
+  <tr><td>模型</td><td>deepseek-flash(1)</td><td>deepseek-v4-pro</td></tr>
+  <tr><td>模型版本</td><td>DeepSeek-V4.1-Flash</td><td>DeepSeek-V4-Pro-0813</td></tr>
+  <tr><td>价格(2)</td><td>百万tokens输入（缓存命中）</td><td>空闲时段</td><td>0.02元</td><td>0.15元</td></tr>
+  <tr><td>高峰时段</td><td>0.04元</td><td>0.30元</td></tr>
+  <tr><td>百万tokens输入（缓存未命中）</td><td>空闲时段</td><td>1元</td><td>4.5元</td></tr>
+  <tr><td>高峰时段</td><td>2元</td><td>9.0元</td></tr>
+  <tr><td>百万tokens输出</td><td>空闲时段</td><td>4元</td><td>13.5元</td></tr>
+  <tr><td>高峰时段</td><td>8元</td><td>27.0元</td></tr>
+</table>
+<p>(1) 模型名请使用 deepseek-flash。旧模型名 deepseek-v4-flash、deepseek-v4-flash-vision-exp 仍可调用，但对应模型已下线，并按 Flash 价格计费。</p>
+`;
+
+check('刷新脚本：能从官方页面结构里解析出两个模型的完整价目', () => {
+  const parsed = parsePricingPage(PRICING_HTML);
+  assert.deepEqual(Object.keys(parsed.models), ['deepseek-flash', 'deepseek-v4-pro']);
+  assert.equal(parsed.models['deepseek-flash'].label, 'DeepSeek-V4.1-Flash');
+  assert.deepEqual(parsed.models['deepseek-flash'].cacheHit, { idle: 0.02, peak: 0.04 });
+  assert.deepEqual(parsed.models['deepseek-flash'].cacheMiss, { idle: 1, peak: 2 });
+  assert.deepEqual(parsed.models['deepseek-flash'].output, { idle: 4, peak: 8 });
+  assert.deepEqual(parsed.models['deepseek-v4-pro'].output, { idle: 13.5, peak: 27 });
+  assert.deepEqual(parsed.aliases, {
+    'deepseek-v4-flash': 'deepseek-flash',
+    'deepseek-v4-flash-vision-exp': 'deepseek-flash',
+  });
+});
+
+check('刷新脚本：页面结构变了就报错，绝不写半张表', () => {
+  assert.throws(() => parsePricingPage('<table><tr><td>模型</td></tr></table>'), /解析不出模型列表/);
+  const missingRows = PRICING_HTML.replace(/百万tokens输出[\s\S]*?高峰时段<\/td><td>8元<\/td><td>27\.0元<\/td>/, '');
+  assert.throws(() => parsePricingPage(missingRows), /没解析全/);
+});
+
+check('默认模型：从 DSH 设置文件里读 agent-default-model.model', () => {
+  const file = path.join(pricingTmp, 'settings.yaml');
+  fs.writeFileSync(
+    file,
+    'ui-onboarding:\n  welcomeNoticeVersion: 2026-08-13.1\nagent-default-model:\n  provider: deepseek-official\n  model: deepseek-flash\n  reasoningEffort: high\n'
+  );
+  assert.equal(priceTable.readDshModel(file), 'deepseek-flash');
+  // 没有这一段就返回空串（不猜）
+  const other = path.join(pricingTmp, 'settings-empty.yaml');
+  fs.writeFileSync(other, 'ui-onboarding:\n  welcomeNoticeVersion: 1\n');
+  assert.equal(priceTable.readDshModel(other), '');
+  assert.equal(priceTable.readDshModel(path.join(pricingTmp, 'nope.yaml')), '');
+});
+
+fs.rmSync(pricingTmp, { recursive: true, force: true });
 
 // ---------------------------------------------------------------- 结果
 console.log('');

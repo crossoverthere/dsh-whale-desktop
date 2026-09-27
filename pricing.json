@@ -1,0 +1,55 @@
+{
+  "$comment": "本地价目表：运行时**不联网**，只读这一个文件。刷新靠人工触发 —— `npm run refresh:prices`（脚本抓官方页面并 diff），或直接改这个文件。改完提交，价目表随版本走。",
+  "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+  "updatedAt": "2026-09-28",
+  "currency": "CNY",
+  "unit": "元 / 百万 tokens",
+  "peakHours": [
+    [
+      9,
+      12
+    ],
+    [
+      14,
+      18
+    ]
+  ],
+  "peakNote": "北京时间周一至周五（不含中国法定节假日）9:00-12:00、14:00-18:00 为高峰；空闲价 = 高峰价的一半。下面每个价格都写明 idle（空闲）/ peak（高峰），不靠倍率推导。",
+  "models": {
+    "deepseek-flash": {
+      "label": "DeepSeek-V4.1-Flash",
+      "cacheHit": {
+        "idle": 0.02,
+        "peak": 0.04
+      },
+      "cacheMiss": {
+        "idle": 1,
+        "peak": 2
+      },
+      "output": {
+        "idle": 4,
+        "peak": 8
+      }
+    },
+    "deepseek-v4-pro": {
+      "label": "DeepSeek-V4-Pro-0813",
+      "cacheHit": {
+        "idle": 0.15,
+        "peak": 0.3
+      },
+      "cacheMiss": {
+        "idle": 4.5,
+        "peak": 9
+      },
+      "output": {
+        "idle": 13.5,
+        "peak": 27
+      }
+    }
+  },
+  "aliases": {
+    "$comment": "旧模型名：官方说明仍可调用，但对应模型已下线，按 Flash 价格计费",
+    "deepseek-v4-flash": "deepseek-flash",
+    "deepseek-v4-flash-vision-exp": "deepseek-flash"
+  }
+}

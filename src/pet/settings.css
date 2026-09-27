@@ -227,6 +227,46 @@ select {
   padding: 3px 5px;
 }
 
+/* 只读的"当前模型 + 价格"块：信息比普通行多，所以单独给一点排版 */
+.model-row {
+  align-items: flex-start;
+}
+
+.model-row .price-line {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.model-row .badge {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.model-row .badge[data-tone="idle"] {
+  color: #fff;
+  background: #2ea043;
+  border-color: #2ea043;
+}
+
+.model-row .badge[data-tone="peak"] {
+  color: #fff;
+  background: #e0862b;
+  border-color: #e0862b;
+}
+
+.model-row .badge[data-tone="warn"] {
+  color: #fff;
+  background: #d9534f;
+  border-color: #d9534f;
+}
+
 .action {
   flex: 0 0 auto;
   padding: 5px 12px;

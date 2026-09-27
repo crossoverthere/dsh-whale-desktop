@@ -18,7 +18,8 @@ const http = require('node:http');
 const { startPetServer } = require('./server');
 const { DshStateWatcher } = require('./dsh-state');
 const { startBalanceProxy } = require('./balance-proxy');
-const { costOf, shouldAnnounce, announceText, formatTokens, formatMoney } = require('./pricing');
+const { costOf, shouldAnnounce, announceText, formatTokens, formatMoney, isPeak } = require('./pricing');
+const { loadTable, resolveRates, readDshModel, lookupModel } = require('./price-table');
 const { UsageLedger } = require('./usage-today');
 
 /** 内置余额代理（见 src/balance-proxy.js）。 */
@@ -26,6 +27,13 @@ let balanceProxy = null;
 
 /** 「今日消耗」账本（见 src/usage-today.js）：余额查询要报今天一整天的量。 */
 let usageLedger = null;
+
+/** 本地价目表（见 pricing.json 与 src/price-table.js）：运行时只读，不联网。 */
+let priceTable = loadTable();
+/** 当前模型：会话记录里的 request/header 优先，其次 DSH 设置文件里的默认模型。 */
+let currentModel = readDshModel() || '';
+/** 上一次播报用的取价方式，用来只在"取价依据变了"时打一行日志。 */
+let lastRateSource = '';
 
 const ROOT = path.join(__dirname, '..');
 const PET_DIR = path.join(__dirname, 'pet');
@@ -335,6 +343,35 @@ function sayToPet(text, holdMs = SAY_HOLD_MS) {
 }
 
 /**
+ * 此刻、此模型的单价与取价依据（价目表 or 手动配置）。
+ *
+ * 会话记录里带模型名时会顺便更新 currentModel —— 用户换模型后不用重启桌宠。
+ */
+function currentRates(at, modelHint) {
+  if (modelHint && modelHint !== currentModel) {
+    log('[price] 模型变为', modelHint);
+    currentModel = modelHint;
+  }
+  const manual = {
+    cacheHitPerM: Number(config ? config.costPriceHit : 0),
+    cacheMissPerM: Number(config ? config.costPriceMiss : 0),
+    outputPerM: Number(config ? config.costPriceOutput : 0),
+  };
+  const resolved = resolveRates({ table: priceTable, model: currentModel, manual, at });
+  const signature = `${resolved.source}:${resolved.modelKey || 'manual'}:${resolved.peak ? 'peak' : 'idle'}`;
+  if (signature !== lastRateSource) {
+    lastRateSource = signature;
+    log(
+      '[price]',
+      resolved.source === 'table' ? `价目表命中 ${resolved.modelKey}` : `价目表无此模型（${currentModel || '未知'}），改用手动配置`,
+      resolved.peak ? '高峰价' : '空闲价',
+      JSON.stringify(resolved.rates),
+    );
+  }
+  return resolved;
+}
+
+/**
  * 一个 turn 结束时：记账 + （按需）播报。
  *
  * 记账与播报是两件事，必须分开：
@@ -348,12 +385,7 @@ function sayToPet(text, holdMs = SAY_HOLD_MS) {
 function handleTurnEnd(event) {
   if (!config) return;
   const at = Number(event.at) || Date.now();
-  const prices = {
-    cacheHitPerM: Number(config.costPriceHit),
-    cacheMissPerM: Number(config.costPriceMiss),
-    outputPerM: Number(config.costPriceOutput),
-  };
-  const cost = costOf(event.usage, prices, at);
+  const cost = costOf(event.usage, currentRates(at, event.model).rates);
 
   if (usageLedger) {
     // 去重键：同一个 turn 被回放/重复读到时不重复记账
@@ -1221,9 +1253,9 @@ function runSayProbe() {
       })()`);
 
     try {
-      // 与单测同一组样本值：真实 turn 的用量
+      // 与单测同一组样本值：真实 turn 的用量（取价走当前模型 + 当前峰谷，和播报一致）
       const sample = { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 };
-      const expected = announceText(sample, costOf(sample, null, Date.now()));
+      const expected = announceText(sample, costOf(sample, currentRates(Date.now()).rates));
 
       const sayType = await win.webContents.executeJavaScript('typeof window.__dshWhaleMoeSay');
       check('页面暴露说话钩子 __dshWhaleMoeSay', sayType === 'function', sayType);
@@ -1465,7 +1497,7 @@ function runSettingsProbe() {
         // 点另一项 → 右侧真的换屏（这是"二级菜单"的核心行为）
         const switched = await settingsWin.webContents.executeJavaScript(`(() => {
           const buttons = [...document.getElementById('rail').querySelectorAll('button')];
-          const target = buttons.find((b) => b.textContent.trim() === '天气与余额');
+          const target = buttons.find((b) => b.textContent.trim() === '花费播报');
           target.click();
           const visible = [...document.querySelectorAll('section[data-panel]')].filter((s) => !s.hidden);
           const rows = visible.length === 1 ? visible[0].querySelectorAll('.row').length : 0;
@@ -1476,8 +1508,8 @@ function runSettingsProbe() {
           };
         })()`);
         check(
-          '点左侧「天气与余额」→ 右侧只显示这一屏且内容非空',
-          switched.visiblePanels.join(',') === 'env' && switched.rows > 0 && switched.selected.join(',') === '天气与余额',
+          '点左侧「花费播报」→ 右侧只显示这一屏且内容非空',
+          switched.visiblePanels.join(',') === 'cost' && switched.rows > 0 && switched.selected.join(',') === '花费播报',
           JSON.stringify(switched)
         );
         /*
@@ -1494,10 +1526,49 @@ function runSettingsProbe() {
           '大小', '位置',
           '重新加载页面', '数据目录', '运行日志',
           '天气城市', '天气 API Key', '显示余额', '余额接口',
-          '播报本次花费', '播报阈值（元）', '单价（元/百万）',
+          '播报本次花费', '播报阈值（元）', '手动配置（元/百万）',
         ];
         const missing = expectedRows.filter((name) => !structure.rows.includes(name));
         check('设置窗口含全部可配置项', missing.length === 0, missing.length ? JSON.stringify(missing) : `${structure.rows.length} 项`);
+
+        /*
+         * 「单价」区域：模型名与价格**只读**，跟着实际用的模型自动刷新；
+         * 手动配置那三个数可改，只在模型不在价目表里时参与计算。
+         */
+        const priceUi = await settingsWin.webContents.executeJavaScript(`(() => {
+          const row = document.querySelector('.model-row');
+          if (!row) return { found: false };
+          const manual = [...document.querySelectorAll('.row')]
+            .find((r) => (r.querySelector('.name') || {}).textContent === '手动配置（元/百万）');
+          return {
+            found: true,
+            name: (row.querySelector('.name') || {}).textContent || '',
+            prices: (row.querySelector('.price-line') || {}).textContent || '',
+            badge: (row.querySelector('.badge') || {}).textContent || '',
+            badgeTone: (row.querySelector('.badge') || {}).getAttribute('data-tone'),
+            // 只读：该区域不该有任何输入控件
+            inputs: row.querySelectorAll('input, select, textarea').length,
+            manualInputs: manual ? manual.querySelectorAll('input').length : 0,
+            manualDisabled: manual
+              ? [...manual.querySelectorAll('input')].every((i) => i.disabled === false)
+              : false,
+          };
+        })()`);
+        check(
+          '「单价」区显示当前模型与它的价格（自动、只读）',
+          priceUi.found &&
+            priceUi.inputs === 0 &&
+            priceUi.name.includes('当前模型') &&
+            priceUi.name.includes('deepseek') &&
+            /命中 .*未命中 .*输出/.test(priceUi.prices) &&
+            ['空闲价', '高峰价'].includes(priceUi.badge),
+          JSON.stringify(priceUi)
+        );
+        check(
+          '「手动配置」区可编辑（模型不在价目表中时用）',
+          priceUi.manualInputs === 3 && priceUi.manualDisabled === true,
+          JSON.stringify({ manualInputs: priceUi.manualInputs, manualDisabled: priceUi.manualDisabled })
+        );
 
         // 说话钩子：server.js 在返回 /pet/mascot.js 时注入的那一行（磁盘 vendor 未改）
         const sayType = await win.webContents.executeJavaScript('typeof window.__dshWhaleMoeSay');
@@ -1629,7 +1700,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 16;
+    const expected = 18;
     log(
       '[settings-probe]',
       results.length !== expected
@@ -1827,6 +1898,51 @@ function registerIpc() {
       log('[settings] content sized to', needed, '->', after, target < needed ? '(已到上限，将可滚动)' : '');
     }
   });
+  /**
+   * 价目信息：设置窗口「单价」区域用。
+   *
+   * 返回的是**已经定好的数字**，页面只负责显示 —— 峰谷判定与表/手动之分只存在于
+   * src/price-table.js 一处。页面每 2 秒问一次，这样用户中途换模型也能自动跟上。
+   */
+  ipcMain.handle('shell:price-info', () => {
+    const now = Date.now();
+    const resolved = currentRates(now, dshWatcher ? dshWatcher.model : null);
+    const hit = lookupModel(priceTable, currentModel);
+    const entry = hit ? hit.entry : null;
+    const pair = (v) => ({ idle: v ? Number(v.idle) : null, peak: v ? Number(v.peak) : null });
+    return {
+      model: currentModel || '',
+      inTable: Boolean(hit),
+      matchedBy: hit ? hit.matchedBy : null,
+      label: entry ? entry.label || hit.key : '',
+      source: resolved.source,
+      peak: isPeak(now),
+      rates: resolved.rates,
+      // 表里这个模型的完整价格（空闲/高峰都给，页面用来展示"当前用哪一档"）
+      tablePrices: entry
+        ? {
+            cacheHit: pair(entry.cacheHit),
+            cacheMiss: pair(entry.cacheMiss),
+            output: pair(entry.output),
+          }
+        : null,
+      table: {
+        ok: priceTable.ok,
+        file: priceTable.file,
+        updatedAt: priceTable.updatedAt,
+        sourceUrl: priceTable.source,
+        unit: priceTable.unit,
+        currency: priceTable.currency,
+        peakNote: priceTable.peakNote,
+        models: priceTable.modelNames,
+      },
+      manual: {
+        cacheHitPerM: Number(config.costPriceHit),
+        cacheMissPerM: Number(config.costPriceMiss),
+        outputPerM: Number(config.costPriceOutput),
+      },
+    };
+  });
   ipcMain.on('shell:reload', () => win && win.webContents.reload());
   ipcMain.on('shell:reset-position', () => resetPosition());
   ipcMain.on('shell:open-path', (_event, which) => {
@@ -1837,10 +1953,8 @@ function registerIpc() {
   ipcMain.on('shell:open-growth', (_event, tab) => openGrowthWindow(tab));
   /** 设置窗口的"测试播报"按钮：直接让她说一句，用来确认钩子在真实环境里可用。 */
   ipcMain.handle('shell:say', async (_event, text, holdMs) => {
-    const line = String(text ?? '').trim() || announceText(
-      { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 },
-      costOf({ inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 }, null, Date.now()),
-    );
+    const sample = { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 };
+    const line = String(text ?? '').trim() || announceText(sample, costOf(sample, currentRates(Date.now()).rates));
     const ok = await sayToPet(line, holdMs);
     log('[say] manual', ok ? 'ok' : 'unavailable', `hold=${Number(holdMs) || SAY_HOLD_MS}`, line);
     return { ok, text: line };
@@ -1949,6 +2063,19 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
 
     createWindow();
     createTray();
+
+    /*
+     * 价目表：运行时只读本地 pricing.json（不联网 —— 没有价格 API，爬页面会静默失效）。
+     * 刷新靠人工：`npm run refresh:prices` 抓官方页面 + diff，确认后提交。
+     * 当前模型先取 DSH 设置文件里的默认模型，之后由会话记录里的 request/header 校正。
+     */
+    log(
+      '[price] 价目表',
+      priceTable.ok ? '已加载' : `加载失败（${priceTable.error}）→ 全部走手动配置`,
+      priceTable.ok ? `${priceTable.modelNames.join(' / ')} · ${priceTable.updatedAt}` : '',
+      '当前模型',
+      currentModel || '(未知)',
+    );
 
     /*
      * 「今日消耗」账本。必须在 watcher 之前建好：watcher 一启动就会回放当天的历史 turn

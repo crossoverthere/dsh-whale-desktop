@@ -1,14 +1,18 @@
 'use strict';
 
 /**
- * DeepSeek 计价与"本次任务花费"文案。
+ * DeepSeek 计费与"本次任务花费"文案。
  *
  * 全部是纯函数，方便单测（见 scripts/test-cost.mjs）—— 计费算错是最难发现的一类 bug，
  * 必须能脱离 Electron 单独验证。
  *
- * 价目表要点（deepseek-flash，2026-09 官方价，元/百万 tokens）：
+ * 分工（刻意分开，避免"价目表"和"算术"纠缠在一起）：
+ *   · **单价从哪来** → src/price-table.js（读本地 pricing.json，按模型 + 峰谷取价）
+ *   · **怎么乘**     → 本文件：`costOf(usage, rates)` 只做"用量 × 已定好的单价"
+ *
+ * 价目表要点（deepseek-flash 空闲价，元/百万 tokens）：
  *   输入（缓存命中）0.02   输入（缓存未命中）1   输出 4
- *   高峰时段价格是空闲时段的 2 倍
+ *   高峰时段价格是空闲时段的 2 倍（具体数字见 pricing.json，不靠倍率推导）
  *
  * 两个必须记住的坑：
  *   1. cacheReadTokens 与 inputTokens 是**分开计价**的两部分，价差 50 倍，
@@ -16,14 +20,14 @@
  *   2. reasoningTokens 是 outputTokens 的**子集**，不能再加一遍。
  */
 
-/** 默认单价（元 / 百万 tokens）。 */
+/** 兜底单价（元 / 百万 tokens）：模型既不在价目表里、手动配置也没填时用。 */
 const DEFAULT_PRICES = Object.freeze({
   cacheHitPerM: 0.02,
   cacheMissPerM: 1,
   outputPerM: 4,
 });
 
-/** 高峰时段单价 = 空闲 × 2。 */
+/** 手动配置走高峰时的倍率（价目表里的数字是逐个写明的，不用这个倍率）。 */
 const PEAK_MULTIPLIER = 2;
 
 /** 高峰时段（北京时间，周一至周五）：9:00-12:00、14:00-18:00。 */
@@ -67,15 +71,17 @@ function totalTokens(usage) {
 
 /**
  * 算钱（元）。
+ *
+ * `rates` 必须是**此刻有效的**单价（空闲或高峰已经选好，见 src/price-table.js 的
+ * resolveRates）—— 本函数不再自己判断峰谷，免得"谁决定时段"散落在两处。
+ *
  * @param {object} usage 汇总后的 token 用量
- * @param {object} [prices] 单价（元/百万 tokens）
- * @param {number} [at] 时间戳，用来判定峰谷
+ * @param {{ cacheHitPerM?: number, cacheMissPerM?: number, outputPerM?: number }} [rates]
  */
-function costOf(usage, prices, at) {
-  const p = { ...DEFAULT_PRICES, ...(prices || {}) };
+function costOf(usage, rates) {
+  const p = { ...DEFAULT_PRICES, ...(rates || {}) };
   const u = normalizeUsage(usage);
-  const raw = (u.inputTokens * p.cacheMissPerM + u.cacheReadTokens * p.cacheHitPerM + u.outputTokens * p.outputPerM) / 1e6;
-  return raw * (isPeak(at) ? PEAK_MULTIPLIER : 1);
+  return (u.inputTokens * p.cacheMissPerM + u.cacheReadTokens * p.cacheHitPerM + u.outputTokens * p.outputPerM) / 1e6;
 }
 
 /** 1546508 -> "154.7 万"；再大到亿就换单位。 */

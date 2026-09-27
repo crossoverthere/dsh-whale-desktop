@@ -235,10 +235,85 @@
     }
 
     /*
-     * 三个单价挤在一行里：它们是一组同质参数，各占一行只是把窗口撑高。
-     * （窗口高度是量出来的，多一行就真的多一行的高度。）
+     * 当前模型 + 它的价格：**只读**，跟着会话里实际用的模型自动刷新。
+     *
+     * 为什么不做成可编辑：价格是按模型从本地价目表（pricing.json）取的，
+     * 手改只会让显示与实际计费不一致。想改价格就刷新价目表，或者用下面的手动配置区。
      */
-    function priceRow() {
+    const modelRow = document.createElement('div');
+    modelRow.className = 'row model-row';
+    const modelText = document.createElement('div');
+    modelText.className = 'text';
+    const modelName = document.createElement('div');
+    modelName.className = 'name';
+    const modelHint = document.createElement('div');
+    modelHint.className = 'hint';
+    const modelPrices = document.createElement('div');
+    modelPrices.className = 'price-line';
+    modelText.append(modelName, modelHint, modelPrices);
+    const modelBadge = document.createElement('span');
+    modelBadge.className = 'badge';
+    modelRow.append(modelText, modelBadge);
+
+    let priceInfo = null;
+    /** 上一次渲染的"签名"：内容变了才重新量一次窗口高度（见函数末尾）。 */
+    let priceSignature = '';
+
+    function renderPriceInfo(info) {
+      priceInfo = info;
+      modelName.textContent = `当前模型：${info.model || '未知'}`;
+      if (info.table.ok === false) {
+        modelBadge.textContent = '价目表缺失';
+        modelBadge.setAttribute('data-tone', 'warn');
+        modelHint.textContent = `读不到 pricing.json（${info.table.file || ''}），已改用手动配置`;
+        modelPrices.textContent = '';
+      } else if (info.inTable) {
+        modelBadge.textContent = info.peak ? '高峰价' : '空闲价';
+        modelBadge.setAttribute('data-tone', info.peak ? 'peak' : 'idle');
+        modelHint.textContent = `${info.label}${info.matchedBy === 'alias' ? '（旧模型名，按此表计费）' : ''} · 价目表 ${info.table.updatedAt}`;
+        const p = info.tablePrices;
+        const money = (v) => (v === null || v === undefined ? '—' : String(v));
+        modelPrices.textContent =
+          `命中 ${money(p.cacheHit.idle)} / 未命中 ${money(p.cacheMiss.idle)} / 输出 ${money(p.output.idle)}` +
+          `（空闲）· ${money(p.cacheHit.peak)} / ${money(p.cacheMiss.peak)} / ${money(p.output.peak)}（高峰）` +
+          ` 元/百万 tokens`;
+      } else {
+        modelBadge.textContent = '手动配置';
+        modelBadge.setAttribute('data-tone', 'warn');
+        modelHint.textContent = '这个模型不在价目表里，正在用手动配置的数字计算';
+        const m = info.rates;
+        modelPrices.textContent =
+          `实际采用：命中 ${m.cacheHitPerM} / 未命中 ${m.cacheMissPerM} / 输出 ${m.outputPerM} 元/百万 tokens` +
+          (info.peak ? '（高峰，已 ×2）' : '');
+      }
+
+      /*
+       * 这块文字是**异步**填进来的（价格要问主进程），比首次量窗口高度晚一步 ——
+       * 填完之后这一屏会变高，不重新量就会平白多出一条滚动条。
+       * 只在内容真的变了时才重量，别每 2 秒都去动窗口尺寸。
+       */
+      const signature = `${modelName.textContent}|${modelHint.textContent}|${modelPrices.textContent}|${modelBadge.textContent}`;
+      if (signature !== priceSignature) {
+        priceSignature = signature;
+        reportHeight();
+      }
+    }
+
+    async function refreshPriceInfo() {
+      if (typeof api.priceInfo !== 'function') return;
+      try {
+        renderPriceInfo(await api.priceInfo());
+      } catch (error) {
+        /* 主进程没起来也不该让设置窗口崩 */
+      }
+    }
+
+    /*
+     * 三个手动单价挤在一行里。
+     * 只在"当前模型不在价目表里"时参与计算 —— 表里有就按表算，这样官方调价后
+     * 用户改过的数字不会悄悄把估算带偏。
+     */
+    function manualPriceRow() {
       const wrap = document.createElement('div');
       wrap.className = 'price-group';
       const specs = [
@@ -254,8 +329,14 @@
         cell.append(caption, numberInput(config[key], step, (v) => applyConfig({ [key]: v }), 'num-input mini-input'));
         wrap.append(cell);
       }
-      return row('单价（元/百万）', '命中 / 未命中 / 输出；工作日 9:00-12:00、14:00-18:00 按 2 倍估算', wrap);
+      return wrap;
     }
+
+    const manualRow = row(
+      '手动配置（元/百万）',
+      '当前模型不在价目表中时用它计算；高峰时段 ×2',
+      manualPriceRow()
+    );
 
     const probe = document.createElement('span');
     probe.className = 'hint';
@@ -289,9 +370,14 @@
       numberRow('播报阈值（元）', '低于这个金额就不打扰，默认 0.01（一分钱）', config.costThreshold, 0.01, (v) =>
         applyConfig({ costThreshold: v })
       ),
-      priceRow(),
+      modelRow,
+      manualRow,
       testRow
     );
+
+    // 先拉一次，再定期刷新：中途换模型（会话里 request/header 变了）也能自动跟上
+    refreshPriceInfo();
+    window.setInterval(refreshPriceInfo, 2000);
   }
 
   // ---------------------------------------------------------------- 3. 天气与余额

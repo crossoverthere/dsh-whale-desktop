@@ -78,21 +78,50 @@ npm run dev          # 带 DevTools
 | 环节 | 实现 |
 | --- | --- |
 | 用量从哪来 | DSH 会话文件里每条 `assistant/message` 的 `usage`，按 `turn/start`…`turn/end` 累加 |
-| 怎么算钱 | `src/pricing.js`：缓存命中 0.02、未命中 1、输出 4（元/百万 tokens），工作日 9:00-12:00 与 14:00-18:00 按 2 倍 |
+| 怎么算钱 | `src/price-table.js` 按**当前模型**从本地价目表取价 → `src/pricing.js` 乘用量 |
 | 什么时候说 | 一个 turn 正常结束且金额 ≥ 阈值（默认 **0.01 元**） |
-| 怎么开口 | 上游没有对外的"说话"接口，壳在返回桌宠脚本时注入一行 `__dshWhaleMoeSay`（`vendor/whale/` 磁盘文件不改） |
-| 在哪配置 | 设置窗口 →「花费播报」：开关、阈值、三个单价、测试播报按钮 |
+| 怎么开口 | 上游没有对外的"说话"接口，壳在返回桌宠脚本时注入一段 `__dshWhaleMoeSay`（`vendor/whale/` 磁盘文件不改） |
+| 在哪配置 | 设置窗口 →「花费播报」：开关、阈值、当前模型与价格（只读）、手动配置、测试播报 |
 
 两个必须记住的计费细节（都踩过）：
 
 - **缓存命中与未命中分开计价**，价差约 50 倍；混算会高估几十倍
 - `reasoningTokens` 是 `outputTokens` 的子集，**不能再加一遍**
 
-已知边界（都写进注释了）：中国法定节假日没处理，那几天会按高峰价高估一倍；
-跨峰谷的长任务只给一个估算值；统计范围是"一个 turn 内的全部记录"，
-**子代理（subagent）消耗的 token 也计入**，因为它们同样落在同一个 turn 里。
+已知边界（都写进注释了）：**不处理中国法定节假日**（那几天官方按空闲计价，我们会高估一倍）；
+统计范围是"一个 turn 内的全部记录"，**子代理（subagent）消耗的 token 也计入**。
 
-> 单价是可改的——官方调价时不用改代码，设置窗口里改数字即可。
+### 单价从哪来：本地价目表，只人工刷新
+
+价格写在仓库根目录的 **`pricing.json`** 里 —— 桌宠运行时**只读这个文件，不联网**。
+DeepSeek 没有价格 API，官网只有一张给人看的网页表格；爬页面一旦结构变动就会静默失效，
+而计费算错是最难发现的一类 bug（她照样说话，只是数字不对）。所以刷新是**人工动作**：
+
+```bash
+npm run refresh:prices            # 抓官方页面 → 解析 → 打印 diff → 写文件（不自动提交）
+npm run refresh:prices -- --dry-run        # 只看结果不写文件
+npm run refresh:prices -- --from-file x.html   # 用已保存的页面（没网时）
+```
+
+脚本解析不出完整表格时会**报错退出且不写文件**（宁可手动改，也不写半张表）。
+
+价目表按模型分档，并带旧模型名别名：
+
+| 模型 | 缓存命中（空闲/高峰） | 缓存未命中 | 输出 |
+| --- | --- | --- | --- |
+| `deepseek-flash` | 0.02 / 0.04 | 1 / 2 | 4 / 8 |
+| `deepseek-v4-pro` | 0.15 / 0.30 | 4.5 / 9 | 13.5 / 27 |
+
+*（元 / 百万 tokens；高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00）*
+
+**当前用哪个模型是自动识别的**：会话记录 `request/header` 里的
+`data.header.config.model`（没读到就用 `~/.dsh/settings.yaml` 的默认模型）。
+所以中途换模型不用重启，设置窗口里那行"当前模型 + 价格"每 2 秒自动跟上。
+
+设置窗口 →「花费播报」分两块：
+
+- **当前模型 / 价格**（只读）：显示模型名、它在价目表里的空闲与高峰价、当前用哪一档
+- **手动配置**（可改）：**只有当模型不在价目表里时**才参与计算（高峰统一 ×2）
 
 ### 余额查询（气泡里那个按钮）
 
@@ -121,9 +150,11 @@ dsh-whale-desktop/
 ├─ src/
 │  ├─ main.js              主进程：窗口/托盘/IPC/自检探针
 │  ├─ preload.js           contextBridge 通道（页面拿不到 node）
-│  ├─ server.js            本地静态服务器：/assets/* → vendor/whale/*
-│  ├─ dsh-state.js         读 DSH 会话文件 → 工作状态 + turn 用量
-│  ├─ pricing.js           计价与播报文案（纯函数，可单测）
+│  ├─ server.js            本地静态服务器：/assets/* → vendor/whale/*（+ 说话钩子补丁）
+│  ├─ dsh-state.js         读 DSH 会话文件 → 工作状态 + turn 用量 + 当前模型
+│  ├─ pricing.js           怎么乘（纯函数）
+│  ├─ price-table.js       单价从哪来（读 pricing.json，按模型 + 峰谷取价）
+│  ├─ usage-today.js       今日消耗账本（落盘、跨天归零、按 会话#turn 去重）
 │  ├─ balance-proxy.js     内置余额代理（自动读 DSH 里的 DeepSeek Key）
 │  └─ pet/
 │     ├─ index.html        只负责按顺序引入上游三个文件
@@ -131,12 +162,14 @@ dsh-whale-desktop/
 │     ├─ shell.js          点击穿透判定 + 头顶浮层 + 日志回传
 │     ├─ settings.*        独立设置窗口
 │     └─ growth.*          养成 / 图鉴窗口
+├─ pricing.json            本地价目表（运行时只读，人工刷新）
 ├─ vendor/whale/           上游桌宠素材（MIT，见 THIRD-PARTY.md）
 ├─ scripts/
 │  ├─ sync-upstream.mjs    从上游 tag 同步素材
 │  ├─ check-vendor.mjs     素材完整性校验
 │  ├─ verify-shell.ps1     点击穿透自动化验证
-│  ├─ test-cost.mjs        计价与播报闸门单测（npm run test:cost）
+│  ├─ test-cost.mjs        计价 / 账本 / 价目表单测（npm run test:cost）
+│  ├─ refresh-prices.mjs   刷新价目表（npm run refresh:prices）
 │  └─ push.ps1             走代理推送
 └─ docs/DEVELOPMENT.md     架构细节与调试方法
 ```
