@@ -289,7 +289,7 @@
     }
   });
 
-  // ---------- 头顶浮层：天气 / 余额 / 称号 / 养成入口 ----------
+  // ---------- 头顶浮层：天气 / 余额 / 养成入口 ----------
   // 上游那块位置原本是三个开关（看板娘/台词气泡/粒子效果）——它们已经进了设置窗口，
   // 于是壳层把这块位置改造成"状态 + 入口"。齿轮 ⚙ 仍然负责开合它。
   const HUD_ID = 'dsh-whale-shell-hud';
@@ -327,18 +327,6 @@
     const core = window.DshWhaleMoeCore;
     const tier = core && core.formatBalance ? core.formatBalance(state.amount, state.currency, false) : '';
     return { main: `💰 ${tier || state.tier}`, sub: `${state.currency} ${Math.round(state.amount)}`, tone: 'ok' };
-  }
-
-  function hudReadBadge() {
-    let id = '';
-    try {
-      id = localStorage.getItem('whale-moe:badge') || '';
-    } catch (error) {
-      id = '';
-    }
-    const core = window.DshWhaleMoeCore;
-    const badge = core && core.BOND ? core.BOND.badges.find((b) => b.id === id) : null;
-    return badge ? { main: `🏅 ${badge.name}`, sub: '点这里看称号', tone: 'ok' } : { main: '未佩戴称号', sub: '点这里看称号', tone: 'muted' };
   }
 
   // 天气预取。
@@ -461,7 +449,6 @@
 
     const weatherRow = hudRow('weather', hudReadWeather, toSettings);
     const balanceRow = hudRow('balance', hudReadBalance, toSettings);
-    const badgeRow = hudRow('badge', hudReadBadge, () => toGrowth('badges'));
 
     const action = document.createElement('button');
     action.type = 'button';
@@ -472,15 +459,14 @@
       toGrowth('quests');
     });
 
-    hud.append(weatherRow, balanceRow, badgeRow, action);
+    hud.append(weatherRow, balanceRow, action);
     hud.__refresh = () => {
       weatherRow.__update();
       balanceRow.__update();
-      badgeRow.__update();
     };
     rootNode.append(hud);
     hud.__refresh();
-    api.log('info', '头顶浮层已就绪（天气 / 余额 / 称号 / 日常养成）');
+    api.log('info', '头顶浮层已就绪（天气 / 余额 / 日常养成）');
     return hud;
   }
 
@@ -687,7 +673,6 @@
       hud: {
         weather: hudReadWeather(),
         balance: hudReadBalance(),
-        badge: hudReadBadge(),
       },
     });
   }

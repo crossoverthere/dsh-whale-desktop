@@ -772,8 +772,8 @@ function runGrowthProbe() {
         };
       })()`);
       check(
-        '头顶浮层结构正确（天气/余额/称号 + 养成入口，挂在桌宠根节点下）',
-        Boolean(hud.found && hud.parentIsRoot && (hud.rows || []).join(',') === 'weather,balance,badge' && hud.action === '日常养成'),
+        '头顶浮层结构正确（天气 / 余额 + 养成入口，挂在桌宠根节点下）',
+        Boolean(hud.found && hud.parentIsRoot && (hud.rows || []).join(',') === 'weather,balance' && hud.action === '日常养成'),
         JSON.stringify(hud)
       );
       check('浮层初始隐藏，且上游偏好面板已被隐藏', hud.found && hud.hidden === true && hud.prefsHidden === true, JSON.stringify({ hidden: hud.hidden, prefsHidden: hud.prefsHidden }));
