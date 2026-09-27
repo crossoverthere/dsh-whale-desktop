@@ -325,8 +325,12 @@
       return { main: '余额不可用', sub: '余额接口无响应', tone: 'muted' };
     }
     const core = window.DshWhaleMoeCore;
-    const tier = core && core.formatBalance ? core.formatBalance(state.amount, state.currency, false) : '';
-    return { main: `💰 ${tier || state.tier}`, sub: `${state.currency} ${Math.round(state.amount)}`, tone: 'ok' };
+    const amount = Number(state.amount);
+    // 金额要精确到分：上游的 formatBalance(…, false) 只给档位措辞（充裕/紧张…），
+    // 所以把确切数字放到主行，档位词退到副行。
+    const shown = Number.isFinite(amount) ? amount.toFixed(2) : String(state.amount);
+    const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
+    return { main: `💰 ${state.currency} ${shown}`, sub: tier || '', tone: 'ok' };
   }
 
   // 天气预取。

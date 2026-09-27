@@ -202,7 +202,9 @@
         const data = await res.json();
         if (data && data.ok && Array.isArray(data.balances) && data.balances.length) {
           const first = data.balances[0];
-          probe.textContent = `✓ 可用：${first.currency} ${first.totalBalance}（来源 ${data.source || '未知'}）`;
+          const amount = Number(first.totalBalance);
+          const shown = Number.isFinite(amount) ? amount.toFixed(2) : String(first.totalBalance);
+          probe.textContent = `✓ 可用：${first.currency} ${shown}（来源 ${data.source || '未知'}）`;
         } else {
           probe.textContent = `✗ 接口通了但数据不合契约：${JSON.stringify(data).slice(0, 120)}`;
         }
