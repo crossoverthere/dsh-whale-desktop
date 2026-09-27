@@ -32,6 +32,13 @@ const argValue = (name) => {
   return eq === -1 ? true : hit.slice(eq + 1);
 };
 const SHOT_MODE = argValue('shot') !== undefined;
+const MENU_PROBE = argValue('menu-probe') !== undefined;
+/** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
+const STANDALONE = argValue('standalone') !== undefined;
+/** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
+const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
+/** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
+const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE;
 
 let win = null;
 let tray = null;
@@ -167,6 +174,7 @@ function createWindow() {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   win.on('closed', () => {
+    stopCursorPolling();
     win = null;
   });
 
@@ -187,12 +195,44 @@ function createWindow() {
     win.webContents.setZoomFactor(config.scale);
     if (config.visible) win.showInactive();
     log('[window] loaded', server.url, 'bounds', JSON.stringify(win.getBounds()));
-    if (SHOT_MODE) scheduleShot();
+    startCursorPolling();
+    if (MENU_PROBE) runMenuProbe();
+    else if (SHOT_MODE) scheduleShot();
   });
 
   screen.on('display-metrics-changed', applyBounds);
   screen.on('display-added', applyBounds);
   screen.on('display-removed', applyBounds);
+}
+
+// ---------------------------------------------------------------- 光标轮询
+/**
+ * 把「屏幕光标 - 窗口原点」的相对坐标推给页面做穿透判定。
+ *
+ * 为什么不靠页面的 mousemove：Windows 上
+ * setIgnoreMouseEvents(true, { forward: true }) 的转发并不可靠 ——
+ * 实测把指针移动到桌宠身上时，页面收不到任何 mousemove，
+ * 于是"压到桌宠才接管鼠标"永远不成立，右键菜单也就点不出来。
+ * 主进程 screen.getCursorScreenPoint() 轮询是确定性的，不依赖转发。
+ */
+const CURSOR_POLL_MS = 80;
+let cursorTimer = null;
+
+function startCursorPolling() {
+  if (cursorTimer) clearInterval(cursorTimer);
+  cursorTimer = setInterval(() => {
+    if (!win || win.isDestroyed()) return;
+    const point = screen.getCursorScreenPoint();
+    const bounds = win.getBounds();
+    win.webContents.send('shell:cursor', { x: point.x - bounds.x, y: point.y - bounds.y });
+  }, CURSOR_POLL_MS);
+}
+
+function stopCursorPolling() {
+  if (cursorTimer) {
+    clearInterval(cursorTimer);
+    cursorTimer = null;
+  }
 }
 
 function setVisible(next) {
@@ -292,6 +332,66 @@ function createTray() {
   tray.on('click', toggleVisible);
 }
 
+// ---------------------------------------------------------------- 右键菜单越界探针
+/**
+ * 在屏幕右下角模拟一次右键，量出菜单是否溢出视口。
+ *
+ * 存在的理由：上游 showContextMenu 用写死的 180x160 估算尺寸夹取位置，
+ * 菜单实际高度随项目数变化（最多 10 项），贴边时必然溢出。
+ * 修完之后必须有可量化的证据，而不是"看着好像好了"。
+ */
+function runMenuProbe() {
+  const target = typeof argValue('menu-probe') === 'string' ? argValue('menu-probe') : path.join(ROOT, 'tmp', 'menu-probe.png');
+  setTimeout(async () => {
+    try {
+      const opened = await win.webContents.executeJavaScript(`(() => {
+        const frame = document.querySelector('[data-dsh-whale-frame]');
+        if (!frame) return { error: 'no whale frame' };
+        const vw = window.innerWidth, vh = window.innerHeight;
+        // 在右下角极贴近边缘处右键，最大化溢出风险
+        frame.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, clientX: vw - 6, clientY: vh - 6,
+        }));
+        return { vw, vh };
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      const measured = await win.webContents.executeJavaScript(`(() => {
+        const menu = document.querySelector('[data-dsh-whale-context]');
+        if (!menu) return { error: 'context menu not found' };
+        const r = menu.getBoundingClientRect();
+        const vw = window.innerWidth, vh = window.innerHeight;
+        return {
+          left: Math.round(r.left), top: Math.round(r.top),
+          right: Math.round(r.right), bottom: Math.round(r.bottom),
+          w: Math.round(r.width), h: Math.round(r.height),
+          vw, vh,
+          overflowRight: Math.max(0, Math.round(r.right - vw)),
+          overflowBottom: Math.max(0, Math.round(r.bottom - vh)),
+          overflowLeft: Math.max(0, Math.round(-r.left)),
+          overflowTop: Math.max(0, Math.round(-r.top)),
+          items: menu.querySelectorAll('button').length,
+        };
+      })()`);
+
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      const image = await win.webContents.capturePage();
+      fs.writeFileSync(target, image.toPNG());
+
+      log('[menu-probe] viewport', JSON.stringify(opened));
+      log('[menu-probe] menu', JSON.stringify(measured));
+      const ok = measured && !measured.error
+        && measured.overflowRight === 0 && measured.overflowBottom === 0
+        && measured.overflowLeft === 0 && measured.overflowTop === 0;
+      log('[menu-probe]', ok ? 'PASS 菜单完全在屏幕内' : 'FAIL 菜单溢出视口');
+      log('[menu-probe] screenshot', target);
+    } catch (error) {
+      log('[menu-probe] failed', error.message);
+    }
+    app.exit(0);
+  }, 3500);
+}
+
 // ---------------------------------------------------------------- 自检截图
 function scheduleShot() {
   const raw = argValue('shot-delay');
@@ -360,6 +460,8 @@ function registerIpc() {
     win.setIgnoreMouseEvents(!value, { forward: true });
   });
   ipcMain.on('shell:pet-rect', (_event, rect) => {
+    // 整包存下来：除矩形外还带着渲染进程自己的 interactive 与 lastMouse，
+    // 用于区分"鼠标事件没送到"和"DOM 命中判定失灵"。
     shellState.petRect = rect && typeof rect === 'object' ? rect : null;
   });
   ipcMain.handle('shell:get-config', () => ({ ...config, isPackaged: app.isPackaged }));
@@ -385,7 +487,8 @@ function registerIpc() {
 }
 
 // ---------------------------------------------------------------- 启动
-if (!app.requestSingleInstanceLock()) {
+// 自检模式要与常驻实例并存（探针会另起一个窗口），所以跳过单实例锁。
+if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -403,7 +506,7 @@ if (!app.requestSingleInstanceLock()) {
       server = await startPetServer({
         petDir: PET_DIR,
         vendorDir: VENDOR_DIR,
-        port: config.port,
+        port: PORT_OVERRIDE ?? config.port,
         stateProvider: () => ({
           interactive: shellState.interactive,
           ignoreMouseEvents: !shellState.interactive,

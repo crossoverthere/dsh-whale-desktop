@@ -3,9 +3,13 @@
 # 原理：真正移动系统指针到桌宠上 / 空白处，然后读应用暴露的 /__shell/state，
 # 看交互状态有没有跟着切换。跑完会把指针还原到原位置。
 #
-# 用法: pwsh -File scripts/verify-shell.ps1
+# 封闭性：用独立端口 + --standalone 启动自己的实例。
+# 否则若用户已经开着一只常驻桌宠，新实例会被单实例锁顶掉，
+# 脚本就会误测到那只旧的（我们踩过这个坑）。
+#
+# 用法: powershell -File scripts/verify-shell.ps1
 
-param([int]$Port = 38911, [int]$BootTimeoutSec = 40)
+param([int]$Port = 38977, [int]$BootTimeoutSec = 40)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -29,8 +33,8 @@ Write-Host "原指针位置: $($origin.X),$($origin.Y)"
 $electron = Join-Path $root 'node_modules\electron\dist\electron.exe'
 if (-not (Test-Path $electron)) { throw "找不到 electron.exe，先跑 npm install" }
 
-Write-Host '启动应用 ...'
-$proc = Start-Process -FilePath $electron -ArgumentList '.' -WorkingDirectory $root -PassThru
+Write-Host "启动应用（独立实例，端口 $Port）..."
+$proc = Start-Process -FilePath $electron -ArgumentList '.', '--standalone', "--port=$Port" -WorkingDirectory $root -PassThru
 
 $results = [ordered]@{}
 try {

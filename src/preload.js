@@ -17,6 +17,19 @@ contextBridge.exposeInMainWorld('whaleShell', {
   quit: () => ipcRenderer.send('shell:quit'),
   /** 渲染进程日志/报错回传，方便无界面时排查。 */
   log: (level, message) => ipcRenderer.send('shell:log', { level, message }),
+  /**
+   * 主进程轮询来的「屏幕光标 - 窗口原点」相对坐标（DIP）。
+   *
+   * 为什么不直接用页面的 mousemove：Windows 上
+   * setIgnoreMouseEvents(true, { forward: true }) 的转发并不可靠，
+   * 实测合成鼠标移动收不到任何 mousemove，穿透判定就会彻底失灵。
+   * 改由主进程 screen.getCursorScreenPoint 轮询推送，判定不再依赖转发。
+   */
+  onCursor: (cb) => {
+    const handler = (_event, pos) => cb(pos);
+    ipcRenderer.on('shell:cursor', handler);
+    return () => ipcRenderer.removeListener('shell:cursor', handler);
+  },
   /** 供未来接 DSH 工作状态联动：主进程推 busy 状态进页面。 */
   onBusy: (cb) => {
     const handler = (_event, value) => cb(Boolean(value));
