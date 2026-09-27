@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!--
+    纯本地页面：脚本/样式全部来自 http://127.0.0.1:<port>/assets/*（上游素材原文）。
+    connect-src 只放行桌宠真正会用的两个外部端点：
+      · 天气：api.open-meteo.com / geocoding-api.open-meteo.com（选填，城市留空则零联网）
+      · 余额：本机 127.0.0.1:3020（DSH 的余额代理，没有就静默失败）
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' data: blob:;
+                 script-src 'self' 'unsafe-inline';
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' data: blob:;
+                 media-src 'self' data: blob:;
+                 connect-src 'self' https://api.open-meteo.com https://geocoding-api.open-meteo.com http://127.0.0.1:3020;" />
+  <title>鲸鱼娘桌宠</title>
+
+  <!-- 上游桌宠样式（不改动） -->
+  <link rel="stylesheet" href="/assets/dsh-whale-moe.css" />
+  <!-- 壳的覆盖样式：必须在上游样式之后 -->
+  <link rel="stylesheet" href="/pet/shell.css" />
+</head>
+<body>
+  <!-- 上游纯函数状态机，必须先于表现层 -->
+  <script src="/assets/whale-moe-core.js"></script>
+  <!-- 上游桌宠本体：自己 appendChild 到 body，自己读 localStorage 定位 -->
+  <script src="/assets/dsh-whale-moe.js"></script>
+  <!-- 壳胶水：点击穿透判定 + 日志回传 -->
+  <script src="/pet/shell.js"></script>
+</body>
+</html>

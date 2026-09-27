@@ -1,0 +1,41 @@
+/* 壳的覆盖样式：把页面变成"只有桌宠可见"的透明画布。
+   上游 dsh-whale-moe.css 一个字都不改，这里只做宿主要求的最小适配。 */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+/* 拖动窗口整屏时不要出现滚动条/回弹 */
+html {
+  overscroll-behavior: none;
+}
+
+/* 上游桌宠把容器设成 pointer-events:none、可交互部件设成 auto，
+   这套结构正好让 elementFromPoint 的命中判定成立（见 shell.js）。
+   这里绝不能给 body 设 pointer-events:none —— 那会被子元素继承，
+   把桌宠自己弹出到 body 上的菜单一起弄成不可点。 */
+body {
+  cursor: default;
+}
+
+/* 视觉上不要出现文本选中高亮；但桌宠设置面板里的输入框要保留可编辑 */
+* {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+::selection {
+  background: transparent;
+}

@@ -1,0 +1,7 @@
+{
+  "upstream": "Sutera-Diffusus/dsh-whale-musume",
+  "tag": "v2.1.0",
+  "packageVersion": "2.1.0",
+  "method": "首次 vendor 于 2026-09-27，来源为本机已安装的 npm 包 dsh-whale-musume@2.1.0（等价于上游 v2.1.0 的 assets/）",
+  "note": "后续请用 npm run sync:upstream 更新，不要再手工复制"
+}
