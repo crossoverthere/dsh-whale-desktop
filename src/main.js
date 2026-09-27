@@ -14,6 +14,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShortcut } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const http = require('node:http');
 const { startPetServer } = require('./server');
 const { DshStateWatcher } = require('./dsh-state');
 
@@ -908,12 +909,60 @@ function runGrowthProbe() {
       }
       setter.destroy();
       check('天气端到端：另一个窗口改城市 → 桌宠主动预取真实天气', Boolean(weather), JSON.stringify(weather));
+
+      // ---- 8) 余额端到端：契约 + 自定义地址是否真的能用 ----
+      // 上游要的形状： { ok: true, balances: [ { currency, totalBalance } ] }，
+      // 而且**必须带 CORS 头**（页面源是 127.0.0.1:38911，接口在另一个端口 = 跨源）。
+      const balanceServer = http.createServer((req, res) => {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(JSON.stringify({ ok: true, balances: [{ currency: 'CNY', totalBalance: 888.5 }] }));
+      });
+      await new Promise((resolve) => balanceServer.listen(3021, '127.0.0.1', resolve));
+
+      const beforeEndpoint = await win.webContents.executeJavaScript("localStorage.getItem('whale-moe:balanceEndpoint')");
+      const beforeEnabled = await win.webContents.executeJavaScript("localStorage.getItem('whale-moe:balance')");
+      const balSetter = new BrowserWindow({
+        width: 400,
+        height: 300,
+        show: false,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
+      });
+      await balSetter.loadURL(`${server.url}/pet/settings.html`);
+      await balSetter.webContents.executeJavaScript(`
+        localStorage.setItem('whale-moe:balanceEndpoint', 'http://127.0.0.1:3021/balance');
+        localStorage.setItem('whale-moe:balance', '1');
+      `);
+      const balance = await win.webContents.executeJavaScript(`(async () => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 25000) {
+          await new Promise((r) => setTimeout(r, 500));
+          const b = window.__dshWhaleMoeBalance;
+          if (b && b.ok === true && Number.isFinite(b.amount)) return { amount: b.amount, currency: b.currency, tier: b.tier, ms: Date.now() - t0 };
+        }
+        const b = window.__dshWhaleMoeBalance;
+        return { failed: true, last: b ? JSON.stringify(b) : null };
+      })()`);
+
+      if (beforeEndpoint === null) await balSetter.webContents.executeJavaScript("localStorage.removeItem('whale-moe:balanceEndpoint')");
+      else await balSetter.webContents.executeJavaScript(`localStorage.setItem('whale-moe:balanceEndpoint', ${JSON.stringify(beforeEndpoint)})`);
+      if (beforeEnabled === null) await balSetter.webContents.executeJavaScript("localStorage.removeItem('whale-moe:balance')");
+      else await balSetter.webContents.executeJavaScript(`localStorage.setItem('whale-moe:balance', ${JSON.stringify(beforeEnabled)})`);
+      balSetter.destroy();
+      await new Promise((resolve) => balanceServer.close(resolve));
+      check(
+        '余额端到端：自定义接口 + CORS 后能读到金额',
+        Boolean(balance && balance.ok !== false && balance.amount === 888.5),
+        JSON.stringify(balance)
+      );
     } catch (error) {
       log('[growth-probe] failed', error.message);
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 13;
+    const expected = 14;
     log(
       '[growth-probe]',
       results.length !== expected

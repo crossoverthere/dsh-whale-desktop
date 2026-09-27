@@ -4,9 +4,11 @@
   <meta charset="utf-8" />
   <!--
     纯本地页面：脚本/样式全部来自 http://127.0.0.1:<port>/assets/*（上游素材原文）。
-    connect-src 只放行桌宠真正会用的两个外部端点：
+    connect-src 放行桌宠真正会用的几类端点：
       · 天气：api.open-meteo.com / geocoding-api.open-meteo.com（选填，城市留空则零联网）
-      · 余额：本机 127.0.0.1:3020（DSH 的余额代理，没有就静默失败）
+      · 余额：默认本机 127.0.0.1:3020，但**接口地址可在设置里改**，
+        所以这里必须放行本机任意端口 + https —— 否则自定义地址会被 CSP 直接拦掉
+        （表现是"余额不可用"，而且控制台才会说明原因，很难查）。
   -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' data: blob:;
@@ -14,7 +16,7 @@
                  style-src 'self' 'unsafe-inline';
                  img-src 'self' data: blob:;
                  media-src 'self' data: blob:;
-                 connect-src 'self' https://api.open-meteo.com https://geocoding-api.open-meteo.com http://127.0.0.1:3020;" />
+                 connect-src 'self' https: http://127.0.0.1:* http://localhost:*;" />
   <title>鲸鱼娘桌宠</title>
 
   <!-- 上游桌宠样式（不改动） -->
