@@ -458,28 +458,51 @@ function toggleVisible() {
 
 // ---------------------------------------------------------------- 托盘菜单
 /**
- * 托盘 = **全局动作入口**，不再是配置面板。
+ * 托盘 = 高频全局动作 + 快速开关。
  *
- * 职责划分（与桌宠右键菜单刻意分工）：
- *   桌宠右键菜单 → 只放"对她做的事"（投喂/戳/夸/小游戏/回到原位）
- *   托盘        → 显示隐藏、打开设置窗口、退出
- *   设置窗口    → 所有可配置项，按类分组
- * 所以这里**不再重复**放置顶/跟随 DSH/自启/缩放/重置位置等可配置项，
- * 免得同一项在两处各有一套状态、对不上。
+ * 与设置窗口是**同一份 config 的两个入口**（设置窗口内容更全、按类分组）。
+ * 两边不会打架：所有改动都走 setScale/setAlwaysOnTop/… 这些 setter，
+ * 而它们末尾都会调用 refreshTrayMenu()，所以托盘的勾选状态始终跟着 config 走。
  */
 function buildTrayTemplate() {
   return [
     { label: '显示桌宠', type: 'checkbox', checked: config.visible, click: () => setVisible(!config.visible) },
-    { type: 'separator' },
     { label: '设置…', click: () => openSettingsWindow() },
+    { type: 'separator' },
+    { label: '总是置顶', type: 'checkbox', checked: config.alwaysOnTop, click: () => setAlwaysOnTop(!config.alwaysOnTop) },
+    {
+      label: '跟随 DSH 工作状态',
+      type: 'checkbox',
+      checked: config.followDsh,
+      click: () => setFollowDsh(!config.followDsh),
+    },
+    { label: '开机自启', type: 'checkbox', checked: config.autoLaunch, click: () => setAutoLaunch(!config.autoLaunch) },
+    {
+      label: '大小',
+      submenu: [0.8, 0.9, 1, 1.1, 1.25, 1.5].map((value) => ({
+        label: `${Math.round(value * 100)}%`,
+        type: 'radio',
+        checked: Math.abs(config.scale - value) < 0.001,
+        click: () => setScale(value),
+      })),
+    },
+    { label: '重置到默认位置', click: resetPosition },
+    { label: '重新加载页面', click: () => win && win.webContents.reload() },
+    { type: 'separator' },
+    { label: '打开数据目录', click: () => require('electron').shell.openPath(app.getPath('userData')) },
+    { label: '打开日志', click: () => require('electron').shell.openPath(logFile()) },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit(); } },
   ];
 }
 
+/** 保留当前托盘菜单的引用：自检需要读它的勾选状态，验证与设置窗口的同步。 */
+let trayMenu = null;
+
 function refreshTrayMenu() {
   if (!tray) return;
-  tray.setContextMenu(Menu.buildFromTemplate(buildTrayTemplate()));
+  trayMenu = Menu.buildFromTemplate(buildTrayTemplate());
+  tray.setContextMenu(trayMenu);
 }
 
 function createTray() {
@@ -652,10 +675,20 @@ function runSettingsProbe() {
         throw new Error('桌宠右键菜单没打开：' + JSON.stringify(mascotMenu));
       }
 
-      // ---- 2) 托盘菜单有「设置…」，点它开窗 ----
-      const trayLabels = buildTrayTemplate().map((item) => item.label || `(${item.type})`);
-      const settingsItem = buildTrayTemplate().find((item) => item.label === '设置…');
-      check('托盘菜单含「设置…」', Boolean(settingsItem), JSON.stringify(trayLabels));
+      // ---- 2) 托盘菜单：原有项都在，且新增了「设置…」 ----
+      const trayTemplate = buildTrayTemplate();
+      const trayLabels = trayTemplate.map((item) => item.label || `(${item.type})`);
+      const settingsItem = trayTemplate.find((item) => item.label === '设置…');
+      const trayRequired = [
+        '显示桌宠', '设置…', '总是置顶', '跟随 DSH 工作状态', '开机自启',
+        '大小', '重置到默认位置', '重新加载页面', '打开数据目录', '打开日志', '退出',
+      ];
+      const trayMissing = trayRequired.filter((label) => !trayLabels.includes(label));
+      check(
+        '托盘菜单含「设置…」且原有项齐全',
+        Boolean(settingsItem) && trayMissing.length === 0,
+        trayMissing.length ? `缺: ${JSON.stringify(trayMissing)}` : JSON.stringify(trayLabels)
+      );
       if (settingsItem) {
         settingsItem.click();
       }
@@ -760,6 +793,13 @@ function runSettingsProbe() {
           before !== after && after === config.alwaysOnTop,
           `isAlwaysOnTop ${before} -> ${after}, config=${config.alwaysOnTop}`
         );
+        // 托盘和设置窗口是同一份 config 的两个入口，勾选状态必须跟着走
+        const trayItem = trayMenu ? trayMenu.items.find((item) => item.label === '总是置顶') : null;
+        check(
+          '托盘勾选状态跟随设置窗口变化',
+          Boolean(trayItem) && trayItem.checked === config.alwaysOnTop,
+          `tray.checked=${trayItem ? trayItem.checked : 'n/a'} config=${config.alwaysOnTop}`
+        );
         // 还原
         await settingsWin.webContents.executeJavaScript(`(() => {
           const row = [...document.querySelectorAll('.row')].find((r) => (r.querySelector('.name') || {}).textContent === '总是置顶');
@@ -790,7 +830,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 12;
+    const expected = 13;
     log(
       '[settings-probe]',
       results.length < expected
