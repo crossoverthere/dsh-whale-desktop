@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-09-27
+
+### 修复
+
+- **设置窗口打开后一片空白，点一下窗口才显示内容。**
+
+  根因：桌宠窗口是**整屏 + 置顶**的，Windows 上 Chromium 的"原生窗口遮挡检测"
+  会把设置窗口判定为**被完全遮住**，于是**停止为它出帧** —— 直到出现交互强制重绘。
+  这是"桌面挂件类 Electron 应用再开一个窗口"的典型踩坑。
+
+  三处一起改：
+
+  1. 启动时追加 `--disable-features=CalculateNativeWinOcclusion`。
+     **追加而非覆盖**，避免踩掉 Electron/Chromium 自己设的 disable-features。
+  2. 设置窗口改为 `show: false` + `ready-to-show` 后再显示（等首帧就绪），
+     并 `setAlwaysOnTop(true, 'screen-saver')` 压在整屏桌宠之上；
+     失焦时自动撤掉置顶，免得一直浮在别的应用上面。
+  3. 显示后主动 `webContents.invalidate()` 再要求重绘一次。
+
+- `npm run settings:probe` 增加两条**像素级断言**：窗口首帧必须非空白、
+  失去焦点后仍必须非空白（统计暗像素/彩色像素占比；白屏时两者都接近 0）。
+  共 7 项断言。
+
 ## [0.3.0] - 2026-09-27
 
 ### 新增

@@ -192,6 +192,39 @@ if (btn) btn.click();
 注入时机用 `MutationObserver` 盯 `document.body`，并用 `panelCloseTarget.isConnected`
 做短路（桌宠 DOM 变动很频繁，不能让每次 mutation 都跑选择器）。
 
+### 4.8 坑：新窗口在"整屏置顶"宿主下会白屏
+
+桌宠窗口是**整屏 + 置顶**的。Windows 上 Chromium 有一个"原生窗口遮挡检测"
+（`CalculateNativeWinOcclusion`）：它按**窗口矩形**判断可见性，不看透明度，
+于是会把设置窗口判定为"被完全遮住" → **停止为该窗口出帧** →
+表现就是**窗口打开后一片空白，点一下才出现内容**。
+
+三处修（缺一不可）：
+
+```js
+// 1) 启动前追加，别覆盖（Electron/Chromium 自己也会设 disable-features）
+const existing = app.commandLine.getSwitchValue('disable-features');
+app.commandLine.appendSwitch('disable-features',
+  existing ? `${existing},CalculateNativeWinOcclusion` : 'CalculateNativeWinOcclusion');
+```
+
+```js
+// 2) 等首帧就绪再显示；并且要压在整屏桌宠之上
+show: false,
+alwaysOnTop: true,
+win.once('ready-to-show', () => { win.show(); win.focus(); win.webContents.invalidate(); });
+```
+
+```
+3) 失焦时 setAlwaysOnTop(false)，避免它一直浮在别的应用上面
+```
+
+验证方式见 `settings:probe` 里的 **像素级断言**：截图统计暗像素/彩色像素占比，
+白屏时两者都接近 0（实测正常值 `darkRatio≈0.052`、`coloredRatio≈0.020`）。
+
+> 注意：`capturePage()` 本身会强制要一帧，所以它**不总能复现**屏幕上的白屏；
+> 它能证明"内容确实渲染了"，但用户侧观感仍需人工确认一次。
+
 ## 5. DSH 工作状态联动
 
 上游会在"思考中/工作中/完成/出错"时切换立绘与状态签，判断依据是页面里的

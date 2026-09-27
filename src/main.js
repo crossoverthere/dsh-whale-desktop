@@ -25,6 +25,20 @@ const VENDOR_DIR = path.join(ROOT, 'vendor', 'whale');
 // 日志/配置路径带中文会给脚本化排查添麻烦。
 app.setName('dsh-whale-desktop');
 
+/*
+ * Windows 上关闭 Chromium 的"原生窗口遮挡检测"。
+ *
+ * 为什么必须关：桌宠窗口是**整屏 + 置顶**的，遮挡检测会把其它窗口判定为
+ * "被完全遮住"，于是**停止为它们出帧** —— 表现就是设置窗口打开后一片空白，
+ * 点一下窗口（触发交互/重绘）内容才出现。
+ * 追加而不是覆盖，避免踩掉 Electron/Chromium 自己设的 disable-features。
+ */
+{
+  const existing = app.commandLine.getSwitchValue('disable-features');
+  const merged = existing ? `${existing},CalculateNativeWinOcclusion` : 'CalculateNativeWinOcclusion';
+  app.commandLine.appendSwitch('disable-features', merged);
+}
+
 const argv = process.argv.slice(1);
 const argValue = (name) => {
   const hit = argv.find((a) => a === `--${name}` || a.startsWith(`--${name}=`));
@@ -303,6 +317,7 @@ function openSettingsWindow() {
   settingsWin = new BrowserWindow({
     width: 360,
     height: 268,
+    show: false, // 等 ready-to-show（首帧就绪）再显示，避免先出现一块空白
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -310,15 +325,36 @@ function openSettingsWindow() {
     autoHideMenuBar: true,
     title: '看板娘设置',
     backgroundColor: '#fafafa',
+    // 桌宠窗口是整屏置顶的，设置窗口必须比它更高，否则既被画在她下面，
+    // 又正好落进上面说的"被遮挡"判定里。
+    alwaysOnTop: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
       devTools: Boolean(argValue('dev')),
     },
   });
   settingsWin.setMenuBarVisibility(false);
+  settingsWin.setAlwaysOnTop(true, 'screen-saver');
   settingsWin.loadURL(`${server.url}/pet/settings.html`);
+
+  // 失焦就撤掉置顶，免得它一直浮在别的应用上面
+  settingsWin.on('focus', () => {
+    if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setAlwaysOnTop(true, 'screen-saver');
+  });
+  settingsWin.on('blur', () => {
+    if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setAlwaysOnTop(false);
+  });
+
+  settingsWin.once('ready-to-show', () => {
+    settingsWin.show();
+    settingsWin.focus();
+    // 首帧落屏后再主动要求重绘一次，双保险
+    settingsWin.webContents.invalidate();
+    log('[settings] shown (alwaysOnTop=' + settingsWin.isAlwaysOnTop() + ')');
+  });
   // 内容高度随字体/缩放而变，按实际渲染高度自适应，免得第三项被截断
   settingsWin.webContents.once('did-finish-load', async () => {
     try {
@@ -511,23 +547,55 @@ function runDshProbe() {
 }
 
 // ---------------------------------------------------------------- 自检小工具
-/**
- * 截图带重试：窗口刚 setContentSize / 刚显示时，合成器可能还没出新帧，
- * capturePage 会抛 UnknownVizError。重试几次即可，别让截图失败中断整条断言链。
- */
-async function captureTo(webContents, target) {
+/** 截图带重试并返回 NativeImage：窗口刚 setContentSize / 刚显示时合成器还没出新帧，
+ *  capturePage 会抛 UnknownVizError。返回 null 表示三次都失败。 */
+async function captureImage(webContents) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const image = await webContents.capturePage();
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, image.toPNG());
-      return true;
+      return await webContents.capturePage();
     } catch (error) {
       log('[probe] capture attempt', attempt, 'failed:', error.message);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  return false;
+  return null;
+}
+
+async function captureTo(webContents, target) {
+  const image = await captureImage(webContents);
+  if (!image) return false;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, image.toPNG());
+  return true;
+}
+
+/**
+ * 判断截图是不是"一片空白"。
+ * 全白（未出帧）时暗像素与彩色像素的占比都接近 0；
+ * 正常渲染时文字会贡献暗像素、蓝色开关会贡献彩色像素。
+ */
+function analyzePixels(image) {
+  const size = image.getSize();
+  const bitmap = image.toBitmap();
+  let total = 0;
+  let dark = 0;
+  let colored = 0;
+  for (let y = 0; y < size.height; y += 2) {
+    for (let x = 0; x < size.width; x += 2) {
+      const i = (y * size.width + x) * 4;
+      const b = bitmap[i];
+      const g = bitmap[i + 1];
+      const r = bitmap[i + 2];
+      total += 1;
+      if (r < 200 || g < 200 || b < 200) dark += 1;
+      if (Math.abs(r - g) > 30 || Math.abs(g - b) > 30 || Math.abs(r - b) > 30) colored += 1;
+    }
+  }
+  return {
+    size: `${size.width}x${size.height}`,
+    darkRatio: Number((dark / total).toFixed(4)),
+    coloredRatio: Number((colored / total).toFixed(4)),
+  };
 }
 
 // ---------------------------------------------------------------- 设置窗口探针
@@ -580,8 +648,38 @@ function runSettingsProbe() {
         const [cw, ch] = settingsWin.getContentSize();
         const scrollH = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
         check('窗口高度容得下全部内容（无滚动条）', scrollH <= ch, `content=${cw}x${ch} scrollHeight=${scrollH}`);
-        const shot = await captureTo(settingsWin.webContents, target);
-        log('[settings-probe]', shot ? 'screenshot ' + target : 'screenshot FAILED');
+        log('[settings-probe] disable-features =', app.commandLine.getSwitchValue('disable-features'));
+        const image = await captureImage(settingsWin.webContents);
+        if (image) {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, image.toPNG());
+          const stats = analyzePixels(image);
+          check(
+            '设置窗口首帧就渲染出内容（非空白）',
+            stats.darkRatio > 0.003 && stats.coloredRatio > 0.001,
+            JSON.stringify(stats)
+          );
+          log('[settings-probe] screenshot', target);
+        } else {
+          check('设置窗口首帧就渲染出内容（非空白）', false, '截图三次都失败');
+        }
+
+        // 把焦点抢回桌宠窗口，再截一次：模拟"用户还没点设置窗口"的状态。
+        // 这正是遮挡检测出问题时的表现场景（未聚焦 → 被判遮挡 → 不出帧 → 白屏）。
+        win.focus();
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const blurredImage = await captureImage(settingsWin.webContents);
+        if (blurredImage) {
+          const stats = analyzePixels(blurredImage);
+          check(
+            '失去焦点后仍保持渲染（不白屏）',
+            stats.darkRatio > 0.003 && stats.coloredRatio > 0.001,
+            JSON.stringify(stats)
+          );
+        } else {
+          check('失去焦点后仍保持渲染（不白屏）', false, '截图失败');
+        }
+        settingsWin.focus();
 
         // 2) 在设置窗口里关掉「台词气泡」
         await settingsWin.webContents.executeJavaScript(`(() => {
@@ -626,7 +724,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 5;
+    const expected = 7;
     log(
       '[settings-probe]',
       results.length < expected
