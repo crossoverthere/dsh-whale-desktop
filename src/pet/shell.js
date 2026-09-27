@@ -136,6 +136,7 @@
   }
 
   function watchMenu(menu) {
+    stripNonInteractionItems(menu);
     clampIntoViewport(menu);
     // 布局可能要到下一帧才稳定，再夹一次兜底
     requestAnimationFrame(() => clampIntoViewport(menu));
@@ -162,28 +163,15 @@
     }
   }).observe(document.body, { childList: true, subtree: true });
 
-  // ---------- 右键菜单「打开看板娘设置」在桌面模式下的替代行为 ----------
-  // 上游那一项是去找 **DSH 页面**的设置入口（`[data-slot="sidebar.settings"] button`
-  // → `[data-slot="settings.trigger"]` → 文本"设置"兜底），独立桌面版没有 DSH 页面，
-  // 点了自然毫无反应。
+  // ---------- 桌宠右键菜单只留"对她做的事" ----------
+  // 上游菜单里「打开看板娘设置」属于应用级配置，按职责划分应该走
+  // 托盘 → 设置窗口，所以壳层把它从桌宠菜单里摘掉。
   //
-  // 修在壳层：页面上确实没有 DSH 入口时，改为打开**独立的设置窗口**
-  // （主进程创建的 BrowserWindow，与页面同源、共享 localStorage）。
-  // vendor/whale 依旧不改。
-  const SETTINGS_ITEM_LABEL = '打开看板娘设置';
+  // 只在"页面上确实没有 DSH 设置入口"时摘：将来若把这个页面嵌回 DSH，
+  // 上游原有的行为应当原样保留，我们不抢。
+  const NON_INTERACTION_ITEMS = ['打开看板娘设置'];
 
-  /** 没有壳 API 时的退路：直接打开页面内那个偏好面板。 */
-  function openPetPrefs() {
-    const prefs = document.querySelector('[data-dsh-whale-prefs]');
-    if (!prefs) {
-      api.log('error', 'openPetPrefs: 找不到 [data-dsh-whale-prefs]');
-      return false;
-    }
-    prefs.hidden = false;
-    return true;
-  }
-
-  /** 页面里到底有没有 DSH 的设置入口（有就让上游自己处理，别抢）。 */
+  /** 页面里到底有没有 DSH 的设置入口。 */
   function hasDshSettingsEntry() {
     if (document.querySelector('[data-slot="sidebar.settings"] button')) {
       return true;
@@ -197,35 +185,18 @@
     );
   }
 
-  // 用捕获阶段：此时右键菜单还挂在 DOM 上，判定最可靠。
-  // 不阻止上游 handler（它会负责关掉右键菜单），只在其后补一个动作。
-  document.addEventListener(
-    'click',
-    (event) => {
-      const button =
-        event.target && typeof event.target.closest === 'function'
-          ? event.target.closest('[data-dsh-whale-context] button')
-          : null;
-      if (!button) {
-        return;
+  function stripNonInteractionItems(menu) {
+    if (hasDshSettingsEntry()) {
+      return;
+    }
+    for (const button of menu.querySelectorAll('button')) {
+      const label = (button.textContent || '').trim();
+      if (NON_INTERACTION_ITEMS.includes(label)) {
+        button.remove();
+        api.log('info', `已从桌宠右键菜单摘掉「${label}」（它属于设置，已移到托盘 → 设置窗口）`);
       }
-      if ((button.textContent || '').trim() !== SETTINGS_ITEM_LABEL) {
-        return;
-      }
-      if (hasDshSettingsEntry()) {
-        return; // 有 DSH 入口，上游自己能处理
-      }
-      window.setTimeout(() => {
-        if (typeof api.openSettings === 'function') {
-          api.openSettings();
-          api.log('info', '已打开独立设置窗口');
-        } else {
-          openPetPrefs(); // 没有壳 API 时退回页面内面板
-        }
-      }, 0);
-    },
-    true
-  );
+    }
+  }
 
   // ---------- 页面内偏好面板：补一个能关掉它的入口 ----------
   // 上游面板只能靠齿轮 ⚙ 开合，而齿轮在台词气泡里、气泡 4.5 秒后自动隐藏，

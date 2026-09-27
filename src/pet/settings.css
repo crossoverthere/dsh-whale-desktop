@@ -3,6 +3,22 @@
 
 :root {
   color-scheme: light dark;
+  --fg: #1a1a1a;
+  --fg-dim: rgb(0 0 0 / 55%);
+  --bg: #fafafa;
+  --card: #fff;
+  --line: rgb(0 0 0 / 10%);
+  --accent: #4aa8ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #eaeaea;
+    --fg-dim: rgb(255 255 255 / 55%);
+    --bg: #1f1f1f;
+    --card: #2a2a2a;
+    --line: rgb(255 255 255 / 12%);
+  }
 }
 
 * {
@@ -18,26 +34,38 @@ body {
 body {
   padding: 14px 16px 12px;
   font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  color: #1a1a1a;
-  background: #fafafa;
+  color: var(--fg);
+  background: var(--bg);
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    color: #eaeaea;
-    background: #1f1f1f;
-  }
-}
-
 h1 {
-  margin: 0 0 10px;
-  font-size: 13px;
+  margin: 0 0 12px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  opacity: 0.72;
+}
+
+h2 {
+  margin: 0 0 6px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  letter-spacing: 0.6px;
+}
+
+section {
+  margin-bottom: 14px;
+}
+
+/* 双列：4 个分类单列排下来近 900px，太高了；两列约 500px */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+  align-items: start;
 }
 
 .row {
@@ -47,17 +75,13 @@ h1 {
   gap: 12px;
   margin-bottom: 7px;
   padding: 9px 11px;
-  background: #fff;
-  border: 1px solid rgb(0 0 0 / 10%);
+  background: var(--card);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  cursor: pointer;
 }
 
-@media (prefers-color-scheme: dark) {
-  .row {
-    background: #2a2a2a;
-    border-color: rgb(255 255 255 / 12%);
-  }
+label.row {
+  cursor: pointer;
 }
 
 .text {
@@ -71,7 +95,7 @@ h1 {
 .hint {
   margin-top: 2px;
   font-size: 11px;
-  opacity: 0.6;
+  color: var(--fg-dim);
 }
 
 input[type="checkbox"] {
@@ -100,20 +124,46 @@ input[type="checkbox"]::after {
 }
 
 input[type="checkbox"]:checked {
-  background: #4aa8ff;
+  background: var(--accent);
 }
 
 input[type="checkbox"]:checked::after {
   transform: translateX(15px);
 }
 
+select {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.action {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.action:hover {
+  border-color: var(--accent);
+}
+
 .foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
+  margin-top: 4px;
   font-size: 11px;
-  opacity: 0.6;
+  color: var(--fg-dim);
 }
 
 .foot button {
@@ -121,8 +171,7 @@ input[type="checkbox"]:checked::after {
   font: inherit;
   color: inherit;
   background: transparent;
-  border: 1px solid rgb(128 128 128 / 45%);
+  border: 1px solid var(--line);
   border-radius: 8px;
   cursor: pointer;
-  opacity: 1;
 }

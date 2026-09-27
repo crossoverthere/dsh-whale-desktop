@@ -9,11 +9,34 @@
 </head>
 <body>
   <h1>看板娘设置</h1>
-  <div id="list"></div>
+
+  <div class="grid">
+    <section>
+      <h2>看板娘</h2>
+      <div class="group" id="group-pet"></div>
+    </section>
+
+    <section>
+      <h2>窗口与状态</h2>
+      <div class="group" id="group-window"></div>
+    </section>
+
+    <section>
+      <h2>大小与位置</h2>
+      <div class="group" id="group-size"></div>
+    </section>
+
+    <section>
+      <h2>维护</h2>
+      <div class="group" id="group-maint"></div>
+    </section>
+  </div>
+
   <div class="foot">
-    <span>改动立即生效，无需重启</span>
+    <span id="version"></span>
     <button type="button" id="close">关闭</button>
   </div>
+
   <script src="/pet/settings.js"></script>
 </body>
 </html>

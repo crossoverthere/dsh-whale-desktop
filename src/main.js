@@ -315,8 +315,8 @@ function openSettingsWindow() {
     return settingsWin;
   }
   settingsWin = new BrowserWindow({
-    width: 360,
-    height: 268,
+    width: 580,
+    height: 520,
     show: false, // 等 ready-to-show（首帧就绪）再显示，避免先出现一块空白
     resizable: false,
     minimizable: false,
@@ -329,6 +329,7 @@ function openSettingsWindow() {
     // 又正好落进上面说的"被遮挡"判定里。
     alwaysOnTop: true,
     webPreferences: {
+      preload: path.join(__dirname, 'settings-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -355,14 +356,20 @@ function openSettingsWindow() {
     settingsWin.webContents.invalidate();
     log('[settings] shown (alwaysOnTop=' + settingsWin.isAlwaysOnTop() + ')');
   });
-  // 内容高度随字体/缩放而变，按实际渲染高度自适应，免得第三项被截断
+  // 内容高度随字体/缩放/分类数量而变，按实际渲染高度自适应
   settingsWin.webContents.once('did-finish-load', async () => {
     try {
+      await new Promise((resolve) => setTimeout(resolve, 250)); // 等 IPC 渲染完各分组
       const needed = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
       if (needed > 0) {
         const [width] = settingsWin.getContentSize();
-        settingsWin.setContentSize(width, Math.min(Math.max(needed, 180), 720));
-        log('[settings] content sized to', needed);
+        const capped = Math.min(Math.max(needed, 200), 760);
+        settingsWin.setContentSize(width, capped);
+        if (needed > capped) {
+          // 小屏幕上放不下就让它可以滚，别硬裁掉
+          await settingsWin.webContents.executeJavaScript("document.body.style.overflowY = 'auto'");
+        }
+        log('[settings] content sized to', needed, 'capped', capped);
       }
     } catch (error) {
       log('[settings] auto-size failed', error.message);
@@ -432,7 +439,8 @@ function setFollowDsh(next) {
   refreshTrayMenu();
 }
 
-function resetPosition() {  if (!win) return;
+function resetPosition() {
+  if (!win) return;
   win.webContents
     .executeJavaScript(
       `(() => { try { localStorage.removeItem('whale-moe:floatX'); localStorage.removeItem('whale-moe:floatY'); return true; } catch (e) { return false; } })()`
@@ -449,37 +457,29 @@ function toggleVisible() {
 }
 
 // ---------------------------------------------------------------- 托盘菜单
-function refreshTrayMenu() {
-  if (!tray) return;
-  const menu = Menu.buildFromTemplate([
+/**
+ * 托盘 = **全局动作入口**，不再是配置面板。
+ *
+ * 职责划分（与桌宠右键菜单刻意分工）：
+ *   桌宠右键菜单 → 只放"对她做的事"（投喂/戳/夸/小游戏/回到原位）
+ *   托盘        → 显示隐藏、打开设置窗口、退出
+ *   设置窗口    → 所有可配置项，按类分组
+ * 所以这里**不再重复**放置顶/跟随 DSH/自启/缩放/重置位置等可配置项，
+ * 免得同一项在两处各有一套状态、对不上。
+ */
+function buildTrayTemplate() {
+  return [
     { label: '显示桌宠', type: 'checkbox', checked: config.visible, click: () => setVisible(!config.visible) },
     { type: 'separator' },
-    { label: '总是置顶', type: 'checkbox', checked: config.alwaysOnTop, click: () => setAlwaysOnTop(!config.alwaysOnTop) },
-    {
-      label: '跟随 DSH 工作状态',
-      type: 'checkbox',
-      checked: config.followDsh,
-      click: () => setFollowDsh(!config.followDsh),
-    },
-    { label: '开机自启', type: 'checkbox', checked: config.autoLaunch, click: () => setAutoLaunch(!config.autoLaunch) },
-    {
-      label: '大小',
-      submenu: [0.8, 0.9, 1, 1.1, 1.25, 1.5].map((value) => ({
-        label: `${Math.round(value * 100)}%`,
-        type: 'radio',
-        checked: Math.abs(config.scale - value) < 0.001,
-        click: () => setScale(value),
-      })),
-    },
-    { label: '重置到默认位置', click: resetPosition },
-    { label: '重新加载页面', click: () => win && win.webContents.reload() },
-    { type: 'separator' },
-    { label: '打开数据目录', click: () => require('electron').shell.openPath(app.getPath('userData')) },
-    { label: '打开日志', click: () => require('electron').shell.openPath(logFile()) },
+    { label: '设置…', click: () => openSettingsWindow() },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit(); } },
-  ]);
-  tray.setContextMenu(menu);
+  ];
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayTemplate()));
 }
 
 function createTray() {
@@ -598,12 +598,16 @@ function analyzePixels(image) {
   };
 }
 
-// ---------------------------------------------------------------- 设置窗口探针
+// ---------------------------------------------------------------- 菜单分工 & 设置窗口探针
 /**
- * 验证三件事：
- *   1) 右键菜单点「打开看板娘设置」真的弹出独立窗口，且里面有 3 个开关
- *   2) 在窗口里关掉「台词气泡」→ 桌宠页面同源 localStorage 立刻读到 "0"
- *   3) 页面内偏好面板补上的关闭按钮确实能关掉它
+ * 覆盖职责划分与设置窗口两件事：
+ *   1) 桌宠右键菜单只留交互项（不该再有「打开看板娘设置」）
+ *   2) 托盘菜单有「设置…」，点它能弹出独立设置窗口
+ *   3) 设置窗口按分类展示，含全部可配置项
+ *   4) 窗口首帧/失焦后都真的渲染出内容（防白屏回归）
+ *   5) 窗口里改「总是置顶」→ 主进程状态跟着变
+ *   6) 偏好写入被桌宠页面读到（同源 localStorage）
+ *   7) 页面内偏好面板仍可关闭
  */
 function runSettingsProbe() {
   const target = typeof argValue('settings-probe') === 'string'
@@ -618,33 +622,69 @@ function runSettingsProbe() {
     };
 
     try {
-      // 1) 从右键菜单点那一项
-      const opened = await win.webContents.executeJavaScript(`(() => {
+      // ---- 1) 桌宠右键菜单：只应有交互项 ----
+      // stripNonInteractionItems 在 MutationObserver 回调里跑（微任务），所以要等一拍再读
+      await win.webContents.executeJavaScript(`(() => {
         const frame = document.querySelector('[data-dsh-whale-frame]');
-        if (!frame) return { error: 'no whale frame' };
+        if (!frame) return false;
         frame.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 600, clientY: 400 }));
+        return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const mascotMenu = await win.webContents.executeJavaScript(`(() => {
         const menu = document.querySelector('[data-dsh-whale-context]');
         if (!menu) return { error: 'menu not opened' };
-        const btn = [...menu.querySelectorAll('button')].find((n) => (n.textContent || '').trim() === '打开看板娘设置');
-        if (!btn) return { error: 'item not found' };
-        btn.click();
-        return { clicked: true };
+        return { labels: [...menu.querySelectorAll('button')].map((n) => n.textContent.trim()) };
       })()`);
+      const labels = (mascotMenu && mascotMenu.labels) || [];
+      const interaction = ['投喂小点心', '戳一下', '夸夸 鲸鱼娘', '回到原位'];
+      check(
+        '桌宠菜单不再含「打开看板娘设置」',
+        labels.length > 0 && !labels.includes('打开看板娘设置'),
+        JSON.stringify(labels)
+      );
+      check(
+        '桌宠菜单保留交互项',
+        interaction.every((item) => labels.includes(item)),
+        JSON.stringify(interaction.filter((item) => !labels.includes(item)))
+      );
+      if (labels.length === 0) {
+        throw new Error('桌宠右键菜单没打开：' + JSON.stringify(mascotMenu));
+      }
+
+      // ---- 2) 托盘菜单有「设置…」，点它开窗 ----
+      const trayLabels = buildTrayTemplate().map((item) => item.label || `(${item.type})`);
+      const settingsItem = buildTrayTemplate().find((item) => item.label === '设置…');
+      check('托盘菜单含「设置…」', Boolean(settingsItem), JSON.stringify(trayLabels));
+      if (settingsItem) {
+        settingsItem.click();
+      }
       await new Promise((resolve) => setTimeout(resolve, 2200));
 
       const winInfo = settingsWin && !settingsWin.isDestroyed()
         ? { exists: true, visible: settingsWin.isVisible(), title: settingsWin.getTitle() }
         : { exists: false };
-      check('菜单项弹出独立设置窗口', Boolean(winInfo.exists && winInfo.visible), JSON.stringify({ opened, winInfo }));
+      check('托盘「设置…」弹出独立设置窗口', Boolean(winInfo.exists && winInfo.visible), JSON.stringify(winInfo));
 
       if (winInfo.exists) {
-        const toggles = await settingsWin.webContents.executeJavaScript(
-          `[...document.querySelectorAll('#list .row')].map((r) => ({
-             key: (r.querySelector('.name') || {}).textContent,
-             checked: r.querySelector('input').checked,
-           }))`
+        const structure = await settingsWin.webContents.executeJavaScript(`(() => ({
+          sections: [...document.querySelectorAll('section h2')].map((n) => n.textContent.trim()),
+          rows: [...document.querySelectorAll('.row .name')].map((n) => n.textContent.trim()),
+        }))()`);
+        check(
+          '设置窗口按分类展示（4 类）',
+          structure.sections.length === 4,
+          JSON.stringify(structure.sections)
         );
-        check('设置窗口含 3 个开关', toggles.length === 3, JSON.stringify(toggles));
+        const expectedRows = [
+          '看板娘', '台词气泡', '粒子效果',
+          '总是置顶', '跟随 DSH 工作状态', '开机自启',
+          '大小', '位置',
+          '重新加载页面', '数据目录', '运行日志',
+        ];
+        const missing = expectedRows.filter((name) => !structure.rows.includes(name));
+        check('设置窗口含全部可配置项', missing.length === 0, missing.length ? JSON.stringify(missing) : `${structure.rows.length} 项`);
+
         const [cw, ch] = settingsWin.getContentSize();
         const scrollH = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
         check('窗口高度容得下全部内容（无滚动条）', scrollH <= ch, `content=${cw}x${ch} scrollHeight=${scrollH}`);
@@ -683,7 +723,7 @@ function runSettingsProbe() {
 
         // 2) 在设置窗口里关掉「台词气泡」
         await settingsWin.webContents.executeJavaScript(`(() => {
-          const row = [...document.querySelectorAll('#list .row')].find((r) => (r.querySelector('.name') || {}).textContent === '台词气泡');
+          const row = [...document.querySelectorAll('.row')].find((r) => (r.querySelector('.name') || {}).textContent === '台词气泡');
           const input = row.querySelector('input');
           input.checked = false;
           input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -697,12 +737,38 @@ function runSettingsProbe() {
 
         // 还原
         await settingsWin.webContents.executeJavaScript(`(() => {
-          const row = [...document.querySelectorAll('#list .row')].find((r) => (r.querySelector('.name') || {}).textContent === '台词气泡');
+          const row = [...document.querySelectorAll('.row')].find((r) => (r.querySelector('.name') || {}).textContent === '台词气泡');
           const input = row.querySelector('input');
           input.checked = true;
           input.dispatchEvent(new Event('change', { bubbles: true }));
           return true;
         })()`);
+
+        // ---- 壳配置往返：窗口里切「总是置顶」，主进程状态必须跟着变 ----
+        const before = win.isAlwaysOnTop();
+        await settingsWin.webContents.executeJavaScript(`(() => {
+          const row = [...document.querySelectorAll('.row')].find((r) => (r.querySelector('.name') || {}).textContent === '总是置顶');
+          const input = row.querySelector('input');
+          input.checked = !input.checked;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return input.checked;
+        })()`);
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        const after = win.isAlwaysOnTop();
+        check(
+          '窗口里改「总是置顶」→ 主进程状态跟着变',
+          before !== after && after === config.alwaysOnTop,
+          `isAlwaysOnTop ${before} -> ${after}, config=${config.alwaysOnTop}`
+        );
+        // 还原
+        await settingsWin.webContents.executeJavaScript(`(() => {
+          const row = [...document.querySelectorAll('.row')].find((r) => (r.querySelector('.name') || {}).textContent === '总是置顶');
+          const input = row.querySelector('input');
+          input.checked = !input.checked;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`);
+        await new Promise((resolve) => setTimeout(resolve, 300));
       }
 
       // 3) 页面内偏好面板的关闭按钮
@@ -724,7 +790,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 7;
+    const expected = 12;
     log(
       '[settings-probe]',
       results.length < expected
@@ -791,34 +857,7 @@ function runMenuProbe() {
       log('[menu-probe]', ok ? 'PASS 菜单完全在屏幕内' : 'FAIL 菜单溢出视口');
       log('[menu-probe] screenshot', target);
 
-      // ---- 第二阶段：点「打开看板娘设置」应当弹出**独立设置窗口** ----
-      // （上游那一项是找 DSH 页面的设置入口，桌面模式下必然找不到，
-      //   壳层接管后改为开窗口；页面内那个浮层留给齿轮 ⚙，另外补了关闭按钮。）
-      const clicked = await win.webContents.executeJavaScript(`(() => {
-        const menu = document.querySelector('[data-dsh-whale-context]');
-        if (!menu) return { error: 'context menu gone' };
-        const btn = [...menu.querySelectorAll('button')].find(
-          (n) => (n.textContent || '').trim() === '打开看板娘设置'
-        );
-        if (!btn) return { error: 'settings item not found', labels: [...menu.querySelectorAll('button')].map((n) => n.textContent) };
-        btn.click();
-        return { clicked: true, menuGone: !document.querySelector('[data-dsh-whale-context]') };
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      const asWin = settingsWin && !settingsWin.isDestroyed()
-        ? { exists: true, visible: settingsWin.isVisible(), title: settingsWin.getTitle() }
-        : { exists: false };
-      const target2 = typeof argValue('menu-probe') === 'string'
-        ? argValue('menu-probe').replace(/\.png$/i, '-settings.png')
-        : path.join(ROOT, 'tmp', 'menu-probe-settings.png');
-      if (asWin.exists) await captureTo(settingsWin.webContents, target2);
-      log('[menu-probe] click', JSON.stringify(clicked));
-      log('[menu-probe] settingsWindow', JSON.stringify(asWin));
-      log('[menu-probe]', clicked && clicked.clicked && asWin.exists && asWin.visible
-        ? 'PASS 「打开看板娘设置」已弹出独立设置窗口'
-        : 'FAIL 「打开看板娘设置」没有弹出设置窗口');
-      log('[menu-probe] screenshot2', target2);
+      // 菜单构成（只应含交互项）由 npm run settings:probe 断言，这里不重复。
     } catch (error) {
       log('[menu-probe] failed', error.message);
     }
@@ -904,11 +943,24 @@ function registerIpc() {
       if (typeof patch.scale === 'number') setScale(patch.scale);
       if (typeof patch.alwaysOnTop === 'boolean') setAlwaysOnTop(patch.alwaysOnTop);
       if (typeof patch.autoLaunch === 'boolean') setAutoLaunch(patch.autoLaunch);
+      if (typeof patch.followDsh === 'boolean') setFollowDsh(patch.followDsh);
       if (typeof patch.visible === 'boolean') setVisible(patch.visible);
     }
     return { ...config };
   });
+  ipcMain.handle('shell:app-info', () => ({
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    isPackaged: app.isPackaged,
+  }));
   ipcMain.on('shell:reload', () => win && win.webContents.reload());
+  ipcMain.on('shell:reset-position', () => resetPosition());
+  ipcMain.on('shell:open-path', (_event, which) => {
+    const target = which === 'log' ? logFile() : app.getPath('userData');
+    require('electron').shell.openPath(target).catch((error) => log('[shell] openPath failed', error.message));
+  });
   ipcMain.on('shell:open-settings', () => openSettingsWindow());
   ipcMain.on('shell:quit', () => {
     isQuitting = true;
