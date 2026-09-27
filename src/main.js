@@ -467,7 +467,6 @@ function toggleVisible() {
 function buildTrayTemplate() {
   return [
     { label: '显示桌宠', type: 'checkbox', checked: config.visible, click: () => setVisible(!config.visible) },
-    { label: '设置…', click: () => openSettingsWindow() },
     { type: 'separator' },
     { label: '总是置顶', type: 'checkbox', checked: config.alwaysOnTop, click: () => setAlwaysOnTop(!config.alwaysOnTop) },
     {
@@ -491,6 +490,7 @@ function buildTrayTemplate() {
     { type: 'separator' },
     { label: '打开数据目录', click: () => require('electron').shell.openPath(app.getPath('userData')) },
     { label: '打开日志', click: () => require('electron').shell.openPath(logFile()) },
+    { label: '设置…', click: () => openSettingsWindow() },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit(); } },
   ];
@@ -684,9 +684,10 @@ function runSettingsProbe() {
         '大小', '重置到默认位置', '重新加载页面', '打开数据目录', '打开日志', '退出',
       ];
       const trayMissing = trayRequired.filter((label) => !trayLabels.includes(label));
+      const afterLog = trayLabels.indexOf('设置…') === trayLabels.indexOf('打开日志') + 1;
       check(
-        '托盘菜单含「设置…」且原有项齐全',
-        Boolean(settingsItem) && trayMissing.length === 0,
+        '托盘菜单：原有项齐全，且「设置…」紧跟「打开日志」',
+        Boolean(settingsItem) && trayMissing.length === 0 && afterLog,
         trayMissing.length ? `缺: ${JSON.stringify(trayMissing)}` : JSON.stringify(trayLabels)
       );
       if (settingsItem) {
