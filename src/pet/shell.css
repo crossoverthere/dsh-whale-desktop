@@ -101,13 +101,35 @@ textarea {
   font-size: 11px;
 }
 
+/* 入口按钮行：两个等宽并排（余额查询 / 日常养成）。
+   等宽靠 flex:1 而不是写死宽度 —— 文案改长改短都不用动 CSS。 */
+#dsh-whale-shell-hud .hud-actions {
+  display: flex;
+  gap: 5px;
+}
+
 #dsh-whale-shell-hud .hud-action {
-  padding: 7px 9px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 4px;
   color: #fff;
   background: #4aa8ff;
   border: 0;
   border-radius: 9px;
   font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-align: center;
   cursor: pointer;
+}
+
+#dsh-whale-shell-hud .hud-action:hover:not(:disabled) {
+  background: #3d99ee;
+}
+
+#dsh-whale-shell-hud .hud-action:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 

@@ -454,24 +454,105 @@
     const weatherRow = hudRow('weather', hudReadWeather, toSettings);
     const balanceRow = hudRow('balance', hudReadBalance, toSettings);
 
-    const action = document.createElement('button');
-    action.type = 'button';
-    action.className = 'hud-action';
-    action.textContent = '日常养成';
-    action.addEventListener('click', (event) => {
-      event.stopPropagation();
-      toGrowth('quests');
-    });
+    /*
+     * 入口按钮：两个并排、等宽（.hud-actions 里 flex:1），
+     * 所以文案长短不同也不会一宽一窄。顺序按用户要求：余额查询在左、日常养成在右。
+     */
+    const actions = document.createElement('div');
+    actions.className = 'hud-actions';
 
-    hud.append(weatherRow, balanceRow, action);
+    function hudAction(key, label, onClick) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'hud-action';
+      button.setAttribute('data-hud-action', key);
+      button.textContent = label;
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        onClick(button);
+      });
+      actions.append(button);
+      return button;
+    }
+
+    hudAction('balance-query', '余额查询', (button) => {
+      queryBalance(button);
+    });
+    hudAction('growth', '日常养成', () => toGrowth('quests'));
+
+    hud.append(weatherRow, balanceRow, actions);
     hud.__refresh = () => {
       weatherRow.__update();
       balanceRow.__update();
     };
     rootNode.append(hud);
     hud.__refresh();
-    api.log('info', '头顶浮层已就绪（天气 / 余额 / 日常养成）');
+    api.log('info', '头顶浮层已就绪（天气 / 余额 / 余额查询 / 日常养成）');
     return hud;
+  }
+
+  // ---------- 余额查询：把余额、档位、今日消耗念成一句话 ----------
+  /**
+   * 播报格式（用户定的）：
+   *   当前余额为 CNY 41.11，状态为充裕，今日共计消耗 35.2 万 tokens，消费 0.53 元
+   *
+   * 数据来源分两半：
+   *   · 余额与档位 —— 页面里的 window.__dshWhaleMoeBalance（上游自己按 60 秒刷新），
+   *     档位文案沿用上游的 formatBalance（已见底/告急/偏紧/正常/充裕/很充裕）；
+   *   · 今日消耗 —— 主进程的账本（读会话文件的 usage 按 turn 记账），
+   *     数字在主进程格式化好再送过来，避免两处各写一套万/亿/小数规则。
+   */
+  let balanceQueryPending = false;
+
+  async function queryBalance(button) {
+    if (balanceQueryPending) {
+      return;
+    }
+    const enabled = (() => {
+      try {
+        return localStorage.getItem('whale-moe:balance') === '1';
+      } catch (error) {
+        return false;
+      }
+    })();
+    const state = window.__dshWhaleMoeBalance;
+    const amount = state ? Number(state.amount) : NaN;
+    if (typeof api.say !== 'function') {
+      api.log('error', '余额查询：预加载通道不可用');
+      return;
+    }
+
+    let line;
+    if (!enabled) {
+      line = '余额查询还没启用呢，去设置里打开「显示余额」吧';
+    } else if (!state || state.ok !== true || !Number.isFinite(amount)) {
+      line = '余额接口没有响应，鲸鱼娘查不到余额…先看看设置里的余额接口吧';
+    } else {
+      const core = window.DshWhaleMoeCore;
+      const tier = core && core.formatBalance ? core.formatBalance(amount, state.currency, false) : state.tier;
+      const today = typeof api.getTodayUsage === 'function' ? await api.getTodayUsage() : null;
+      const spent = today
+        ? `今日共计消耗 ${today.tokensText} tokens，消费 ${today.costText} 元`
+        : '今日消耗还没统计出来';
+      line = `当前余额为 ${state.currency} ${amount.toFixed(2)}，状态为${tier || '未知'}，${spent}`;
+    }
+
+    // 查询期间按钮短暂禁用：播报是异步的（要等主进程回今日账本），连点会插队
+    balanceQueryPending = true;
+    if (button) {
+      button.disabled = true;
+    }
+    try {
+      await api.say(line);
+      refreshHud();
+    } catch (error) {
+      api.log('error', '余额查询失败：' + error.message);
+    } finally {
+      balanceQueryPending = false;
+      if (button) {
+        button.disabled = false;
+      }
+    }
   }
 
   function refreshHud() {

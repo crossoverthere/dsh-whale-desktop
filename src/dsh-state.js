@@ -18,6 +18,9 @@
  *   turn/end + reason.kind === "completed"                             → success（闪一下）
  *   turn/end + 其它 reason / tool/result 带 data.error                  → failure（闪一下）
  *   其余 / 超时无写入                                                    → idle
+ *
+ * 另外每条 `assistant/message` 都带 token 用量，按 turn 累加后经 `onTurnEnd` 交出去
+ * （花费播报与"今日累计"都吃这份数据，见 src/pricing.js 与 src/usage-today.js）。
  */
 
 const fs = require('node:fs');
@@ -108,7 +111,10 @@ class DshStateWatcher {
     /** 会话目录；单测指到临时目录就能脱离真实 DSH 验证（见 scripts/test-cost.mjs）。 */
     this.root = options.sessionsRoot ?? sessionsRoot();
     this.onChange = options.onChange ?? (() => {});
-    /** 一个 turn 结束时回调：{ turn, usage, reason, at }，用于"本次任务花费"播报。 */
+    /**
+     * 一个 turn 结束时回调：`{ turn, usage, reason, at, session, historical }`。
+     * 历史 turn（启动时追平到的）也会回调，`historical: true` —— 调用方只入账、不播报。
+     */
     this.onTurnEnd = options.onTurnEnd ?? (() => {});
     this.log = options.log ?? (() => {});
 
@@ -293,13 +299,23 @@ class DshStateWatcher {
           const usage = this.turnUsage;
           const hadUsage = usage.messages > 0;
           this.turnUsage = { inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, messages: 0 };
-          // primed 之前是在读历史，不播报
-          if (this.primed && hadUsage) {
+          /*
+           * 每个 turn 结束都回调，包括启动时追平到的历史 turn。
+           *
+           * 为什么历史也要回调：账本（src/usage-today.js）需要"今日累计"，
+           * 而桌宠可能是在当天中途才起来的（升级重启、开机晚于 DSH），
+           * 只算起来之后的 turn 会明显少一截。历史账由调用方按 `historical`
+           * 决定**只入账不播报**；账本按 `会话#turn` 去重，重复回放不会算两遍。
+           */
+          if (hadUsage) {
             this.onTurnEnd({
               turn: data.turn ?? this.turn ?? null,
               usage,
               reason: data.reason ?? null,
-              at: Date.now(),
+              // 用记录自己的时间而不是 Date.now()：历史账要归到它发生的那一天
+              at: typeof record.time === 'number' ? record.time : Date.now(),
+              session: this.filePath ? path.basename(path.dirname(this.filePath)) : null,
+              historical: !this.primed,
             });
           }
           break;

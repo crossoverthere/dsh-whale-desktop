@@ -18,10 +18,14 @@ const http = require('node:http');
 const { startPetServer } = require('./server');
 const { DshStateWatcher } = require('./dsh-state');
 const { startBalanceProxy } = require('./balance-proxy');
-const { costOf, shouldAnnounce, announceText } = require('./pricing');
+const { costOf, shouldAnnounce, announceText, formatTokens, formatMoney } = require('./pricing');
+const { UsageLedger } = require('./usage-today');
 
 /** 内置余额代理（见 src/balance-proxy.js）。 */
 let balanceProxy = null;
+
+/** 「今日消耗」账本（见 src/usage-today.js）：余额查询要报今天一整天的量。 */
+let usageLedger = null;
 
 const ROOT = path.join(__dirname, '..');
 const PET_DIR = path.join(__dirname, 'pet');
@@ -296,7 +300,7 @@ function startDshWatcher() {
       if (DSH_PROBE || !config || config.followDsh === false) return;
       if (win && !win.isDestroyed()) win.webContents.send('shell:dsh-state', state);
     },
-    onTurnEnd: (event) => announceTurnCost(event),
+    onTurnEnd: (event) => handleTurnEnd(event),
   });
   dshWatcher.start();
   log('[dsh] watcher started');
@@ -321,29 +325,42 @@ function sayToPet(text) {
 }
 
 /**
- * 一个 turn 结束后播报花费。
+ * 一个 turn 结束时：记账 + （按需）播报。
  *
- * 阈值的作用是"别为几分钱刷屏"：低于阈值连日志都不写（正常任务动辄上千万 tokens，
- * 真到了无声无息反而更值得怀疑，所以跳过时留一行日志便于排查）。
+ * 记账与播报是两件事，必须分开：
+ *   · 记账**无条件**做（阈值以下的零头、历史回放的账都要算进"今日消耗"）；
+ *   · 播报只在"实时完成的 turn"且金额达到阈值时才做 ——
+ *     历史回放（桌宠当天中途启动时的补账）绝不能一条条念出来。
  *
- * 计时点用 Date.now() 而不是 turn 开始时间：峰谷价按**结算时刻**算更接近实际账单，
- * 而且跨峰谷的 turn 本来就只能给一个估算值。
+ * 计时点用记录自己的时间（`event.at`）而不是 Date.now()：
+ * 峰谷价按**结算时刻**算更接近实际账单，历史账也能归到它发生的那一天。
  */
-function announceTurnCost({ usage, reason }) {
-  if (!config || config.costSay === false) return;
+function handleTurnEnd(event) {
+  if (!config) return;
+  const at = Number(event.at) || Date.now();
   const prices = {
     cacheHitPerM: Number(config.costPriceHit),
     cacheMissPerM: Number(config.costPriceMiss),
     outputPerM: Number(config.costPriceOutput),
   };
-  const at = Date.now();
-  const cost = costOf(usage, prices, at);
+  const cost = costOf(event.usage, prices, at);
+
+  if (usageLedger) {
+    // 去重键：同一个 turn 被回放/重复读到时不重复记账
+    const key = `${event.session || 'unknown'}#${event.turn ?? '?'}`;
+    const result = usageLedger.record({ key, usage: event.usage, cost, at });
+    // 'past' 是常态：会话文件跨天，启动回放里会夹着昨天及更早的 turn
+    if (result === 'duplicate') log('[usage] 重复的 turn，已跳过', key);
+  }
+
+  if (event.historical) return; // 历史账只入账
+  if (config.costSay === false) return;
   if (!shouldAnnounce(cost, config.costThreshold)) {
-    log('[cost] 低于阈值，不播报', cost.toFixed(6), 'reason=', reason ? reason.kind : 'n/a');
+    log('[cost] 低于阈值，不播报', cost.toFixed(6), 'reason=', event.reason ? event.reason.kind : 'n/a');
     return;
   }
-  const text = announceText(usage, cost);
-  log('[cost]', text, 'reason=', reason ? reason.kind : 'n/a');
+  const text = announceText(event.usage, cost);
+  log('[cost]', text, 'reason=', event.reason ? event.reason.kind : 'n/a');
   sayToPet(text).then((ok) => {
     if (!ok) log('[cost] 说话钩子不可用，已跳过播报');
   });
@@ -823,18 +840,25 @@ function runGrowthProbe() {
         const el = document.getElementById('dsh-whale-shell-hud');
         const prefs = document.querySelector('[data-dsh-whale-prefs]');
         if (!el) return { found: false };
+        const actions = [...el.querySelectorAll('.hud-action')];
         return {
           found: true,
           hidden: el.hidden,
           parentIsRoot: el.parentElement === document.querySelector('[data-dsh-whale-root]'),
           rows: [...el.querySelectorAll('.hud-row')].map((r) => r.getAttribute('data-hud-row')),
-          action: (el.querySelector('.hud-action') || {}).textContent || null,
+          actions: actions.map((b) => b.textContent),
+          actionKeys: actions.map((b) => b.getAttribute('data-hud-action')),
           prefsHidden: prefs ? getComputedStyle(prefs).display === 'none' : null,
         };
       })()`);
       check(
-        '头顶浮层结构正确（天气 / 余额 + 养成入口，挂在桌宠根节点下）',
-        Boolean(hud.found && hud.parentIsRoot && (hud.rows || []).join(',') === 'weather,balance' && hud.action === '日常养成'),
+        '头顶浮层结构正确（天气 / 余额 + 两个入口，挂在桌宠根节点下）',
+        Boolean(
+          hud.found &&
+            hud.parentIsRoot &&
+            (hud.rows || []).join(',') === 'weather,balance' &&
+            (hud.actions || []).join(',') === '余额查询,日常养成'
+        ),
         JSON.stringify(hud)
       );
       check('浮层初始隐藏，且上游偏好面板已被隐藏', hud.found && hud.hidden === true && hud.prefsHidden === true, JSON.stringify({ hidden: hud.hidden, prefsHidden: hud.prefsHidden }));
@@ -845,9 +869,15 @@ function runGrowthProbe() {
         if (!gear) return { error: 'no gear' };
         gear.click();
         const el = document.getElementById('dsh-whale-shell-hud');
+        const actions = [...el.querySelectorAll('.hud-action')];
         return {
           hidden: el.hidden,
           texts: [...el.querySelectorAll('.hud-row')].map((r) => (r.querySelector('.k') || {}).textContent + ' / ' + (r.querySelector('.v') || {}).textContent),
+          // 两个入口的**实际渲染尺寸**（必须等浮层可见才量得到，否则是 0×0）
+          actionBoxes: actions.map((b) => {
+            const r = b.getBoundingClientRect();
+            return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
+          }),
         };
       })()`);
       check(
@@ -855,10 +885,28 @@ function runGrowthProbe() {
         shown && shown.hidden === false && (shown.texts || []).every((t) => t && t.split(' / ')[0]),
         JSON.stringify(shown)
       );
+      check(
+        '两个入口同一行且等宽（余额查询在左、日常养成在右）',
+        (shown.actionBoxes || []).length === 2 &&
+          shown.actionBoxes[0].top === shown.actionBoxes[1].top &&
+          Math.abs(shown.actionBoxes[0].w - shown.actionBoxes[1].w) <= 1 &&
+          shown.actionBoxes.every((b) => b.w > 40 && b.h > 20),
+        JSON.stringify(shown.actionBoxes)
+      );
+      // 顺手留一张浮层的截图：浮层的观感只能看，断言只能保证尺寸与文案
+      {
+        const hudShot = await captureImage(win.webContents);
+        if (hudShot) {
+          const file = path.join(ROOT, 'tmp', 'hud-probe.png');
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, hudShot.toPNG());
+          log('[growth-probe] hud screenshot', file);
+        }
+      }
 
       // ---- 3) 「日常养成」打开养成窗口 ----
       const clicked = await win.webContents.executeJavaScript(`(() => {
-        const btn = document.querySelector('#dsh-whale-shell-hud .hud-action');
+        const btn = document.querySelector('#dsh-whale-shell-hud [data-hud-action="growth"]');
         if (!btn) return false;
         btn.click();
         return true;
@@ -1035,6 +1083,36 @@ function runGrowthProbe() {
         return { failed: true, last: b ? JSON.stringify(b) : null };
       })()`);
 
+      /*
+       * ---- 8.5) 气泡「余额查询」：点一下 → 她念一整句 ----
+       *   当前余额为 CNY 888.50，状态为很充裕，今日共计消耗 … tokens，消费 … 元
+       *
+       * 放在还原 localStorage 之前：这条链路依赖"余额已启用 + 接口指向 888.5 那个假服务"。
+       * 数字部分用正则而不是等值断言：今日消耗取自当天的真实会话账本，
+       * 精确的账本算术由 scripts/test-cost.mjs 覆盖，这里只管四个分句是否都到位。
+       * 台词是逐字打出来的，所以轮询到整句匹配为止。
+       */
+      await win.webContents.executeJavaScript(`(() => {
+        const btn = document.querySelector('#dsh-whale-shell-hud [data-hud-action="balance-query"]');
+        if (btn) btn.click();
+        return Boolean(btn);
+      })()`);
+      const balanceLinePattern = /^当前余额为 CNY 888\.50，状态为很充裕，今日共计消耗 .+ tokens，消费 .+ 元$/;
+      let balanceLine = '';
+      const balanceDeadline = Date.now() + 9000;
+      while (Date.now() < balanceDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        balanceLine = await win.webContents.executeJavaScript(
+          "(() => { const el = document.querySelector('[data-dsh-whale-bubble-text]'); return el ? el.textContent || '' : ''; })()"
+        );
+        if (balanceLinePattern.test(balanceLine)) break;
+      }
+      check(
+        '气泡「余额查询」：念出余额 + 状态 + 今日消耗 tokens/金额',
+        balanceLinePattern.test(balanceLine),
+        JSON.stringify(balanceLine)
+      );
+
       if (beforeEndpoint === null) await balSetter.webContents.executeJavaScript("localStorage.removeItem('whale-moe:balanceEndpoint')");
       else await balSetter.webContents.executeJavaScript(`localStorage.setItem('whale-moe:balanceEndpoint', ${JSON.stringify(beforeEndpoint)})`);
       if (beforeEnabled === null) await balSetter.webContents.executeJavaScript("localStorage.removeItem('whale-moe:balance')");
@@ -1078,7 +1156,7 @@ function runGrowthProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 16;
+    const expected = 18;
     log(
       '[growth-probe]',
       results.length !== expected
@@ -1154,10 +1232,11 @@ function runSayProbe() {
       }
 
       /*
-       * 阈值闸门：清空气泡后播报一个远低于阈值的花费，气泡里不应再出现 tokens。
+       * 阈值闸门：喂一个远低于阈值的 turn，气泡里不应再出现 tokens。
        * 注意断言的是"没有出现花费文案"，而不是"气泡保持隐藏"——
        * 桌宠可能在等待期间自己冒一句日常台词（那是正常的），
        * 拿 hidden 当条件会随机失败。
+       * （这个假 turn 会进自检实例自己的账本，自检用的是另一个文件名，不碰用户的账。）
        */
       await win.webContents.executeJavaScript(`(() => {
         const bubble = document.querySelector('[data-dsh-whale-bubble]');
@@ -1166,7 +1245,14 @@ function runSayProbe() {
         if (bubble) bubble.hidden = true;
         return true;
       })()`);
-      announceTurnCost({ usage: { inputTokens: 1, cacheReadTokens: 0, outputTokens: 1 }, reason: { kind: 'completed' } });
+      handleTurnEnd({
+        turn: -1,
+        usage: { inputTokens: 1, cacheReadTokens: 0, outputTokens: 1, messages: 1 },
+        reason: { kind: 'completed' },
+        at: Date.now(),
+        session: 'say-probe',
+        historical: false,
+      });
       await sleep(900);
       const after = await readBubble();
       check(
@@ -1690,6 +1776,23 @@ function registerIpc() {
     log('[say] manual', ok ? 'ok' : 'unavailable', line);
     return { ok, text: line };
   });
+  /**
+   * 今日消耗：气泡里的「余额查询」用。
+   *
+   * 数字已经格式化好再交出去 —— 千分位/万/亿/小数的规则只应存在于 src/pricing.js 一处，
+   * 页面里再写一遍迟早和播报对不上。
+   */
+  ipcMain.handle('shell:usage-today', () => {
+    const today = usageLedger ? usageLedger.today() : { date: null, tokens: 0, cost: 0, turns: 0 };
+    return {
+      date: today.date,
+      turns: today.turns,
+      tokens: today.tokens,
+      cost: today.cost,
+      tokensText: formatTokens(today.tokens),
+      costText: today.cost > 0 ? formatMoney(today.cost).replace('¥', '') : '0',
+    };
+  });
 
   /*
    * 养成的两个动作必须回到桌宠页面执行：领取任务要跑 applyGrowth / 成就算 /
@@ -1777,6 +1880,19 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
 
     createWindow();
     createTray();
+
+    /*
+     * 「今日消耗」账本。必须在 watcher 之前建好：watcher 一启动就会回放当天的历史 turn
+     * 来补账，账本还没建的话那批账会直接丢掉（见 src/usage-today.js）。
+     *
+     * 自检实例用另一个文件名：它与常驻实例共用同一个 userData，
+     * 两边同时往同一个 JSON 里写会互相覆盖（自检只是临时跑一下，不该动用户的账）。
+     */
+    usageLedger = new UsageLedger({
+      file: path.join(app.getPath('userData'), PROBE_MODE ? 'usage-today-probe.json' : 'usage-today.json'),
+      log: (...parts) => log(...parts),
+    });
+
     startDshWatcher();
 
     /*

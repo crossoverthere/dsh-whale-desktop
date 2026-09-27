@@ -443,7 +443,7 @@ curl http://127.0.0.1:38911/__shell/state   # 其中 dsh 字段即会话文件�
 2. `reasoningTokens` 是 `outputTokens` 的**子集**，再加一遍就重复计费
 
 `src/dsh-state.js` 按 `turn/start` … `turn/end` 累加，`turn/end` 时通过 `onTurnEnd` 回调
-交给主进程。
+交给主进程（历史 turn 也回调，带 `historical: true`，见 6.5.5）。
 
 ### 6.5.2 计价：`src/pricing.js`（纯函数）
 
@@ -489,7 +489,44 @@ root.__dshWhaleMoeSay = showLineNow;   // 插在 root.__dshWhaleMoeStarted = tru
   所以"追平历史"结束时它恰好等于**当前进行中 turn** 已累计的用量，直接保留即可。
 - **阈值**：低于 `costThreshold`（默认 0.01 元）不播报，连日志都只留一行。
 
-### 6.5.5 验证
+### 6.5.5 今日消耗账本：为什么要落盘 + 回放 + 去重
+
+"今天一共烧了多少"和"这个 turn 花了多少"是两道题。后者在内存里累加就行，
+前者不行：桌宠每次升级都要重启，一重启清零的话数字会明显偏小；而 DSH 的会话文件里
+**本来就有当天早些时候的 turn**，没有理由不利用。
+
+`src/usage-today.js` 因此做了四件事：
+
+| 做法 | 为什么 |
+| --- | --- |
+| 落盘 `userData/usage-today.json` | 重启不丢 |
+| 按**本地日期**分区、读写时顺手归零 | 跨天不必等定时器；用本地日期而不是 UTC（东八区凌晨会算到前一天） |
+| 启动时回放当天历史 turn（`historical: true`） | 当天中途才把她叫起来也能补上账 |
+| 按 `会话#turn` 去重 | 每次重启都会回放，没去重就会把同一天的账算两遍 |
+| **只收今天**的 turn | 一个 DSH 会话文件跨天，回放里必然夹着昨天及更早的 turn；直接丢弃，**不能让账本跟着翻页**（否则一次回放就能把今天的账清成昨天的） |
+
+配套改动：`DshStateWatcher.onTurnEnd` 对历史 turn 也回调，附 `historical` 标记 ——
+补账与播报是两件事，由调用方（`main.js` 的 `handleTurnEnd`）分开处理：
+**记账无条件做，播报只做实时且达到阈值的**。
+
+### 6.5.6 气泡「余额查询」念的那句话
+
+```
+当前余额为 CNY 41.11，状态为充裕，今日共计消耗 35.2 万 tokens，消费 0.53 元
+```
+
+数据是拼出来的，两个来源各管一半：
+
+- **余额与状态**：页面里的 `window.__dshWhaleMoeBalance`（上游自己 60 秒刷一次），
+  状态词用上游 `DshWhaleMoeCore.formatBalance(amount, currency, false)`
+- **今日消耗**：主进程账本，经 `shell:usage-today` 取回**已经格式化好的字符串**
+  （万/亿、小数位规则只应存在于 `src/pricing.js` 一处，页面里再写一遍迟早对不上）
+
+按钮布局：两个入口放在 `.hud-actions` 里，各自 `flex: 1` —— 等宽靠 flex 而不是写死宽度，
+文案改长改短都不用动 CSS。`growth:probe` 会量它们的**实际渲染尺寸**
+（必须等浮层可见才量得到，隐藏时 `getBoundingClientRect()` 全是 0）。
+
+### 6.5.7 验证
 
 ```bash
 npm run test:cost    # 17 项离线断言：计价/峰谷/阈值/格式化/turn 累加/闸门

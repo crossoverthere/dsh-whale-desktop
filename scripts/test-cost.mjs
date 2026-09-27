@@ -156,12 +156,14 @@ function turnRecords(turn, usage, kind = 'completed') {
 
 const historyFile = writeSession('history', turnRecords(1, { inputTokens: 100, cacheReadTokens: 0, outputTokens: 10 }));
 
-check('启动时读到的历史 turn 不播报（只有追平之后才算新任务）', () => {
+check('启动时读到的历史 turn 只入账、不播报（historical 标记）', () => {
   const seen = [];
   const watcher = new DshStateWatcher({ sessionsRoot: sessions, onTurnEnd: (e) => seen.push(e), log: () => {} });
   watcher.poll();
   watcher.poll();
-  assert.deepEqual(seen, [], JSON.stringify(seen));
+  assert.equal(seen.length, 1, '历史 turn 也要回调（今日账本要补账）');
+  assert.ok(seen.every((e) => e.historical === true), JSON.stringify(seen));
+  assert.equal(seen[0].session, 'history');
   assert.equal(watcher.primed, true, '追平后应置 primed');
   watcher.stop();
 });
@@ -185,11 +187,12 @@ check('追平之后新增的 turn 会播报，且用量按 turn 累加', () => {
   watcher.poll();
   watcher.stop();
 
-  assert.equal(seen.length, 1, JSON.stringify(seen));
-  assert.deepEqual(seen[0].usage, { inputTokens: 201, cacheReadTokens: 3000, outputTokens: 42, messages: 2 });
-  assert.equal(seen[0].turn, 2);
-  assert.equal(seen[0].reason.kind, 'completed');
-  const cost = pricing.costOf(seen[0].usage, null, Date.now());
+  const live = seen.filter((e) => !e.historical);
+  assert.equal(live.length, 1, JSON.stringify(seen));
+  assert.deepEqual(live[0].usage, { inputTokens: 201, cacheReadTokens: 3000, outputTokens: 42, messages: 2 });
+  assert.equal(live[0].turn, 2);
+  assert.equal(live[0].reason.kind, 'completed');
+  const cost = pricing.costOf(live[0].usage, null, Date.now());
   assert.ok(cost > 0 && Number.isFinite(cost), String(cost));
 });
 
@@ -204,7 +207,7 @@ check('换会话文件时重新追平，不把新文件里的旧账播一遍', (
   watcher.poll();
   watcher.poll();
   assert.ok(watcher.filePath.endsWith(path.join('newer', 'session.v3.jsonl.zstd')), watcher.filePath);
-  assert.deepEqual(seen, [], JSON.stringify(seen));
+  assert.ok(seen.length > 0 && seen.every((e) => e.historical === true), JSON.stringify(seen));
   watcher.stop();
 });
 
@@ -259,11 +262,111 @@ check('跨启动的进行中任务也算得准（追平时保留当前 turn 已�
   ]));
   watcher.poll();
   watcher.stop();
-  assert.equal(seen.length, 1, JSON.stringify(seen));
-  assert.deepEqual(seen[0].usage, { inputTokens: 507, cacheReadTokens: 0, outputTokens: 53, messages: 2 });
+  const live = seen.filter((e) => !e.historical);
+  assert.equal(live.length, 1, JSON.stringify(seen));
+  assert.deepEqual(live[0].usage, { inputTokens: 507, cacheReadTokens: 0, outputTokens: 53, messages: 2 });
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
+
+// ---------------------------------------------------------------- 4. 今日账本
+console.log('[4] 今日消耗账本');
+
+const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ledger-test-'));
+
+function freshLedger(name) {
+  const { UsageLedger } = require('../src/usage-today.js');
+  return new UsageLedger({ file: path.join(ledgerDir, name), log: () => {} });
+}
+
+const HOUR = 3600 * 1000;
+
+check('累计 token / 金额 / turn 数', () => {
+  const ledger = freshLedger('basic.json');
+  const at = Date.now();
+  ledger.record({ key: 's#1', usage: { inputTokens: 100, cacheReadTokens: 200, outputTokens: 10 }, cost: 0.01, at });
+  ledger.record({ key: 's#2', usage: { inputTokens: 1, cacheReadTokens: 2, outputTokens: 3 }, cost: 0.02, at });
+  const today = ledger.today(at);
+  assert.deepEqual(
+    { tokens: today.tokens, cost: today.cost, turns: today.turns },
+    { tokens: 100 + 200 + 10 + 1 + 2 + 3, cost: 0.03, turns: 2 }
+  );
+});
+
+check('同一个 turn 重复入账被去重（回放历史不能算两遍）', () => {
+  const ledger = freshLedger('dedupe.json');
+  const at = Date.now();
+  const entry = { key: 's#7', usage: { inputTokens: 50, outputTokens: 5 }, cost: 0.01, at };
+  assert.equal(ledger.record(entry), 'added');
+  assert.equal(ledger.record(entry), 'duplicate', '第二次应为重复');
+  assert.equal(ledger.today(at).turns, 1);
+  assert.equal(ledger.today(at).tokens, 55);
+});
+
+check('昨天的 turn 既不记账、也不会把账本回退到昨天', () => {
+  const at = Date.now();
+  const yesterday = at - 24 * HOUR;
+  const ledger = freshLedger('past.json');
+  ledger.record({ key: 's#1', usage: { inputTokens: 1000 }, cost: 1, at });
+  // 会话文件是跨天的：启动回放里必然夹着更早的 turn
+  assert.equal(ledger.record({ key: 'old#1', usage: { inputTokens: 999999 }, cost: 99, at: yesterday }), 'past');
+  const today = ledger.today(at);
+  assert.equal(today.tokens, 1000, '今天的账不能被昨天覆盖或污染');
+  assert.equal(today.cost, 1);
+  assert.equal(today.turns, 1);
+});
+
+check('落盘后重启仍在（升级/重启不丢今天的账）', () => {
+  const at = Date.now();
+  const first = freshLedger('persist.json');
+  first.record({ key: 's#1', usage: { inputTokens: 1000 }, cost: 0.001, at });
+  const second = freshLedger('persist.json');
+  const today = second.today(at);
+  assert.equal(today.tokens, 1000);
+  assert.equal(today.turns, 1);
+  assert.ok(Math.abs(today.cost - 0.001) < 1e-9, String(today.cost));
+});
+
+check('跨天自动归零（旧账不会被算进新的一天）', () => {
+  const { localDateKey } = require('../src/usage-today.js');
+  const todayAt = Date.now();
+  const tomorrowAt = todayAt + 24 * HOUR;
+  const ledger = freshLedger('rollover.json');
+  ledger.record({ key: 's#1', usage: { inputTokens: 9999 }, cost: 1, at: todayAt });
+  assert.equal(ledger.today(todayAt).tokens, 9999, '当天应已记账');
+  const tomorrow = ledger.today(tomorrowAt);
+  assert.notEqual(tomorrow.date, localDateKey(todayAt), '日期应已翻页');
+  assert.equal(tomorrow.turns, 0);
+  assert.equal(tomorrow.tokens, 0);
+  assert.equal(tomorrow.cost, 0);
+});
+
+check('昨天写的账文件不会被当成今天的账读进来', () => {
+  const file = path.join(ledgerDir, 'stale.json');
+  const stale = {
+    date: '2000-01-01',
+    inputTokens: 5000,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    cost: 9.9,
+    turns: 5,
+    keys: ['old#1'],
+  };
+  fs.writeFileSync(file, JSON.stringify(stale));
+  const { UsageLedger } = require('../src/usage-today.js');
+  const ledger = new UsageLedger({ file, log: () => {} });
+  assert.equal(ledger.today().tokens, 0);
+  assert.equal(ledger.today().turns, 0);
+});
+
+check('日期键用本地日期（不是 UTC）', () => {
+  const { localDateKey } = require('../src/usage-today.js');
+  // 本地 00:30 必须落在"今天"，用 UTC 取的话东八区会退回前一天
+  const at = new Date(2026, 5, 10, 0, 30, 0).getTime();
+  assert.equal(localDateKey(at), '2026-06-10');
+});
+
+fs.rmSync(ledgerDir, { recursive: true, force: true });
 
 // ---------------------------------------------------------------- 结果
 console.log('');
