@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>鲸鱼娘 · 养成</title>
+  <link rel="stylesheet" href="/assets/dsh-whale-moe.css" />
+  <link rel="stylesheet" href="/pet/growth.css" />
+</head>
+<body>
+  <header>
+    <h1>鲸鱼娘 · 养成</h1>
+    <div id="summary" class="summary"></div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button type="button" data-tab="quests">今日任务</button>
+    <button type="button" data-tab="signin">本周签到</button>
+    <button type="button" data-tab="badges">称号</button>
+    <button type="button" data-tab="journal">成长日记</button>
+    <button type="button" data-tab="achievements">成就</button>
+  </nav>
+
+  <main id="panel"></main>
+
+  <footer>
+    <span id="foot-note">数据存在本机 localStorage，不上传</span>
+    <button type="button" id="close">关闭</button>
+  </footer>
+
+  <!-- 上游纯状态机：成就表 / 称号表 / 等级与任务规则都在这里，直接复用 -->
+  <script src="/assets/whale-moe-core.js"></script>
+  <script src="/pet/growth.js"></script>
+</body>
+</html>

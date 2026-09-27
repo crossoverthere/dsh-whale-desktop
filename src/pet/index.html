@@ -23,6 +23,8 @@
   <link rel="stylesheet" href="/pet/shell.css" />
 </head>
 <body>
+  <!-- 必须最先：给写死的余额接口装可配置的 fetch 垫片 -->
+  <script src="/pet/preshim.js"></script>
   <!-- 上游纯函数状态机，必须先于表现层 -->
   <script src="/assets/whale-moe-core.js"></script>
   <!-- 上游桌宠本体：自己 appendChild 到 body，自己读 localStorage 定位 -->

@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('whaleShell', {
   reload: () => ipcRenderer.send('shell:reload'),
   /** 打开独立的设置窗口（由主进程创建 BrowserWindow）。 */
   openSettings: () => ipcRenderer.send('shell:open-settings'),
+  /** 打开养成 / 图鉴窗口；tab: quests | signin | badges | journal | achievements */
+  openGrowth: (tab) => ipcRenderer.send('shell:open-growth', tab),
   quit: () => ipcRenderer.send('shell:quit'),
   /** 渲染进程日志/报错回传，方便无界面时排查。 */
   log: (level, message) => ipcRenderer.send('shell:log', { level, message }),

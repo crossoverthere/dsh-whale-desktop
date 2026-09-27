@@ -146,6 +146,60 @@
       row('数据目录', '存档与配置（localStorage / config.json）', actionButton('打开', () => api.openDataDir && api.openDataDir())),
       row('运行日志', '主进程与页面的日志汇总', actionButton('打开', () => api.openLog && api.openLog()))
     );
+
+    renderEnvGroup();
+  }
+
+  // ---------------------------------------------------------------- 3. 天气与余额
+  // 这两组直接写 localStorage（与桌宠页面同源），桌宠那边会经 storage 事件重读：
+  // 天气城市/Key 由上游的天气 tick 检测到变化后重新拉取；余额开关与接口同理。
+  function prefText(key, fallback) {
+    try {
+      const value = localStorage.getItem('whale-moe:' + key);
+      return value === null ? fallback : value;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function prefWrite(key, value) {
+    try {
+      if (value) localStorage.setItem('whale-moe:' + key, value);
+      else localStorage.removeItem('whale-moe:' + key);
+    } catch (error) {
+      /* 存储不可用就算了 */
+    }
+  }
+
+  function prefFlag(key) {
+    return prefText(key, '') === '1';
+  }
+
+  function textRow(label, hint, value, placeholder, onCommit) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'text-input';
+    input.value = value;
+    input.placeholder = placeholder || '';
+    input.addEventListener('change', () => onCommit(input.value.trim()));
+    input.addEventListener('click', (event) => event.preventDefault());
+    return row(label, hint, input);
+  }
+
+  function renderEnvGroup() {
+    const group = document.getElementById('group-env');
+    group.append(
+      textRow('天气城市', '留空则不查询天气（走 Open-Meteo，无需 Key）', prefText('weatherCity', ''), '例如 上海', (v) => prefWrite('weatherCity', v)),
+      textRow('天气 API Key', '选填：仅当你的 Open-Meteo 需要 apikey 时填', prefText('weatherKey', ''), '留空即可', (v) => prefWrite('weatherKey', v)),
+      row('显示余额', '开启后她才会去读余额', toggle(prefFlag('balance'), (on) => prefWrite('balance', on ? '1' : ''))),
+      textRow(
+        '余额接口',
+        '默认走本机余额代理；桌面版可改成你自己的接口',
+        prefText('balanceEndpoint', ''),
+        'http://127.0.0.1:3020/balance',
+        (v) => prefWrite('balanceEndpoint', v)
+      )
+    );
   }
 
   renderShellConfig();

@@ -39,3 +39,75 @@ textarea {
 ::selection {
   background: transparent;
 }
+
+/* 上游那个只装三个开关的偏好面板：开关已经进了设置窗口，这里把它藏掉，
+   同一块位置改用壳层自建的 #dsh-whale-shell-hud（天气 / 余额 / 养成入口）。
+   注意齿轮 ⚙ 的点击仍会 toggle 它，只是它不再可见 —— 无副作用。 */
+[data-dsh-whale-prefs] {
+  display: none !important;
+}
+
+/* 头顶浮层：状态 + 入口。位置与观感对齐上游那个面板（贴在头顶正上方）。 */
+#dsh-whale-shell-hud {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 200px;
+  padding: 8px;
+  color: var(--dsw-alias-label-primary, #1a1a1a);
+  background: var(--dsw-alias-bg-overlay, #fff);
+  border: 1px solid var(--dsw-alias-border-l3, rgb(0 0 0 / 18%));
+  border-radius: 12px;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 22%);
+  transform: translateX(-50%);
+  pointer-events: auto;
+  font: 12px/1.4 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+#dsh-whale-shell-hud[hidden] {
+  display: none;
+}
+
+#dsh-whale-shell-hud .hud-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  background: var(--dsw-alias-bg-layer-2, #f3f3f3);
+  border: 1px solid var(--dsw-alias-border-l2, rgb(0 0 0 / 12%));
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+#dsh-whale-shell-hud .hud-row:hover {
+  border-color: #4aa8ff;
+}
+
+#dsh-whale-shell-hud .hud-row .k {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#dsh-whale-shell-hud .hud-row .v {
+  flex: 0 0 auto;
+  color: rgb(128 128 128);
+  font-size: 11px;
+}
+
+#dsh-whale-shell-hud .hud-action {
+  padding: 7px 9px;
+  color: #fff;
+  background: #4aa8ff;
+  border: 0;
+  border-radius: 9px;
+  font: inherit;
+  cursor: pointer;
+}
+

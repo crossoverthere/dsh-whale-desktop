@@ -142,6 +142,17 @@ select {
   cursor: pointer;
 }
 
+.text-input {
+  flex: 0 1 150px;
+  min-width: 90px;
+  padding: 4px 7px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 .action {
   flex: 0 0 auto;
   padding: 5px 12px;

@@ -50,12 +50,13 @@ const SHOT_MODE = argValue('shot') !== undefined;
 const MENU_PROBE = argValue('menu-probe') !== undefined;
 const DSH_PROBE = argValue('dsh-probe') !== undefined;
 const SETTINGS_PROBE = argValue('settings-probe') !== undefined;
+const GROWTH_PROBE = argValue('growth-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
-const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE;
+const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE;
 
 let win = null;
 let tray = null;
@@ -221,6 +222,7 @@ function createWindow() {
     startCursorPolling();
     if (!DSH_PROBE) pushDshState();
     if (SETTINGS_PROBE) runSettingsProbe();
+    else if (GROWTH_PROBE) runGrowthProbe();
     else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
     else if (SHOT_MODE) scheduleShot();
@@ -308,6 +310,110 @@ let settingsWin = null;
  * 独立窗口有原生标题栏（还有窗口内的"关闭"按钮），并且用的是同一个源，
  * 与桌宠页面共享 localStorage，改完立即生效。
  */
+// ---------------------------------------------------------------- 辅助窗口工厂
+/**
+ * 设置窗口与养成窗口共用的创建逻辑。
+ *
+ * 三处细节缺一不可（都是踩过的坑）：
+ *   show:false + ready-to-show   —— 等首帧就绪再显示，避免先出现一片空白
+ *   alwaysOnTop('screen-saver')  —— 必须比整屏置顶的桌宠窗口更高；失焦时撤掉
+ *   显示后 invalidate()          —— 再要求重绘一次
+ * 另外 Windows 上必须全局关掉 Chromium 的遮挡检测，否则整屏桌宠会把新窗口判定为
+ * "被完全遮住"而停止出帧 —— 表现就是窗口一片空白、点一下才出现（见文件顶部 appendSwitch）。
+ *
+ * 注：openSettingsWindow 是这套helper之前写的，逻辑等价但没走这里；
+ *     下次改设置窗口时顺手迁移过来，别让两份实现漂移。
+ */
+function createAuxWindow({ width, height, title, url, preload, autoSize }) {
+  const aux = new BrowserWindow({
+    width,
+    height,
+    show: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    title,
+    backgroundColor: '#fafafa',
+    alwaysOnTop: true,
+    webPreferences: {
+      preload,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+      devTools: Boolean(argValue('dev')),
+    },
+  });
+  aux.setMenuBarVisibility(false);
+  aux.setAlwaysOnTop(true, 'screen-saver');
+  aux.loadURL(url);
+
+  aux.on('focus', () => {
+    if (!aux.isDestroyed()) aux.setAlwaysOnTop(true, 'screen-saver');
+  });
+  aux.on('blur', () => {
+    if (!aux.isDestroyed()) aux.setAlwaysOnTop(false);
+  });
+  aux.once('ready-to-show', () => {
+    aux.show();
+    aux.focus();
+    aux.webContents.invalidate();
+  });
+
+  if (autoSize) {
+    aux.webContents.once('did-finish-load', async () => {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 250)); // 等异步分组渲染完
+        const needed = await aux.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
+        if (needed > 0) {
+          const [w] = aux.getContentSize();
+          const capped = Math.min(Math.max(needed, 200), 760);
+          aux.setContentSize(w, capped);
+          if (needed > capped) {
+            await aux.webContents.executeJavaScript("document.body.style.overflowY = 'auto'");
+          }
+          log('[aux]', title, 'content sized to', needed, 'capped', capped);
+        }
+      } catch (error) {
+        log('[aux]', title, 'auto-size failed', error.message);
+      }
+    });
+  }
+  return aux;
+}
+
+// ---------------------------------------------------------------- 养成 / 图鉴窗口
+let growthWin = null;
+
+/**
+ * 养成窗口：今日任务 / 本周签到 / 称号 / 成长日记 / 成就，五个标签页。
+ * 头顶浮层的「日常养成」与托盘的「称号…」「成就…」都开这一个窗口，只是初始标签不同。
+ */
+function openGrowthWindow(tab) {
+  const wanted = tab || 'quests';
+  if (growthWin && !growthWin.isDestroyed()) {
+    growthWin.show();
+    growthWin.focus();
+    growthWin.webContents.send('growth:tab', wanted);
+    return growthWin;
+  }
+  growthWin = createAuxWindow({
+    width: 620,
+    height: 620,
+    title: '鲸鱼娘 · 养成',
+    url: `${server.url}/pet/growth.html?tab=${encodeURIComponent(wanted)}`,
+    preload: path.join(__dirname, 'growth-preload.js'),
+    autoSize: false, // 长列表窗口：固定高度 + 内部滚动更合适
+  });
+  growthWin.on('closed', () => {
+    growthWin = null;
+  });
+  log('[growth] window opened tab=' + wanted);
+  return growthWin;
+}
+
 function openSettingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.show();
@@ -491,6 +597,8 @@ function buildTrayTemplate() {
     { label: '打开数据目录', click: () => require('electron').shell.openPath(app.getPath('userData')) },
     { label: '打开日志', click: () => require('electron').shell.openPath(logFile()) },
     { label: '设置…', click: () => openSettingsWindow() },
+    { label: '称号…', click: () => openGrowthWindow('badges') },
+    { label: '成就…', click: () => openGrowthWindow('achievements') },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit(); } },
   ];
@@ -621,7 +729,204 @@ function analyzePixels(image) {
   };
 }
 
-// ---------------------------------------------------------------- 菜单分工 & 设置窗口探针
+// ---------------------------------------------------------------- 养成 / 图鉴探针
+/**
+ * 覆盖本次新增的整条链：
+ *   1) 头顶浮层（天气/余额/称号 + 日常养成入口）存在、初始隐藏、上游偏好面板被隐藏
+ *   2) 点齿轮 ⚙ 能打开浮层，且每行都有内容
+ *   3) 「日常养成」打开养成窗口，5 个标签页齐全
+ *   4) 成就页：39 条；已解锁数对得上；未解锁的名称被隐藏
+ *   5) 托盘「称号…」「成就…」能打开对应标签页
+ *   6) 领取任务 / 佩戴称号的 IPC 往返可用（佩戴有可观测效果）
+ */
+function runGrowthProbe() {
+  const target = typeof argValue('growth-probe') === 'string'
+    ? argValue('growth-probe')
+    : path.join(ROOT, 'tmp', 'growth-probe.png');
+
+  setTimeout(async () => {
+    const results = [];
+    const check = (name, ok, detail) => {
+      results.push({ name, ok });
+      log('[growth-probe]', ok ? 'PASS' : 'FAIL', name, detail ? '-> ' + detail : '');
+    };
+
+    try {
+      // ---- 1) 浮层结构 ----
+      const hud = await win.webContents.executeJavaScript(`(() => {
+        const el = document.getElementById('dsh-whale-shell-hud');
+        const prefs = document.querySelector('[data-dsh-whale-prefs]');
+        if (!el) return { found: false };
+        return {
+          found: true,
+          hidden: el.hidden,
+          parentIsRoot: el.parentElement === document.querySelector('[data-dsh-whale-root]'),
+          rows: [...el.querySelectorAll('.hud-row')].map((r) => r.getAttribute('data-hud-row')),
+          action: (el.querySelector('.hud-action') || {}).textContent || null,
+          prefsHidden: prefs ? getComputedStyle(prefs).display === 'none' : null,
+        };
+      })()`);
+      check(
+        '头顶浮层结构正确（天气/余额/称号 + 养成入口，挂在桌宠根节点下）',
+        Boolean(hud.found && hud.parentIsRoot && (hud.rows || []).join(',') === 'weather,balance,badge' && hud.action === '日常养成'),
+        JSON.stringify(hud)
+      );
+      check('浮层初始隐藏，且上游偏好面板已被隐藏', hud.found && hud.hidden === true && hud.prefsHidden === true, JSON.stringify({ hidden: hud.hidden, prefsHidden: hud.prefsHidden }));
+
+      // ---- 2) 齿轮打开浮层 ----
+      const shown = await win.webContents.executeJavaScript(`(() => {
+        const gear = document.querySelector('[data-dsh-whale-gear]') || document.querySelector('[data-dsh-whale-gear-mini]');
+        if (!gear) return { error: 'no gear' };
+        gear.click();
+        const el = document.getElementById('dsh-whale-shell-hud');
+        return {
+          hidden: el.hidden,
+          texts: [...el.querySelectorAll('.hud-row')].map((r) => (r.querySelector('.k') || {}).textContent + ' / ' + (r.querySelector('.v') || {}).textContent),
+        };
+      })()`);
+      check(
+        '点齿轮 ⚙ 打开浮层，且每行都有文案',
+        shown && shown.hidden === false && (shown.texts || []).every((t) => t && t.split(' / ')[0]),
+        JSON.stringify(shown)
+      );
+
+      // ---- 3) 「日常养成」打开养成窗口 ----
+      const clicked = await win.webContents.executeJavaScript(`(() => {
+        const btn = document.querySelector('#dsh-whale-shell-hud .hud-action');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+      const winInfo = growthWin && !growthWin.isDestroyed()
+        ? { exists: true, visible: growthWin.isVisible(), title: growthWin.getTitle() }
+        : { exists: false };
+      check('「日常养成」弹出养成窗口', Boolean(clicked && winInfo.exists && winInfo.visible), JSON.stringify(winInfo));
+
+      if (winInfo.exists) {
+        const tabs = await growthWin.webContents.executeJavaScript(
+          `[...document.querySelectorAll('#tabs button')].map((b) => ({ tab: b.dataset.tab, label: b.textContent, on: b.getAttribute('aria-selected') }))`
+        );
+        check(
+          '养成窗口含 5 个标签页且默认停在今日任务',
+          tabs.length === 5 && tabs[0].on === 'true' && tabs.map((t) => t.label).join(',') === '今日任务,本周签到,称号,成长日记,成就',
+          JSON.stringify(tabs.map((t) => t.label))
+        );
+
+        // ---- 4) 成就页 ----
+        const ach = await growthWin.webContents.executeJavaScript(`(() => {
+          const btn = [...document.querySelectorAll('#tabs button')].find((b) => b.dataset.tab === 'achievements');
+          btn.click();
+          const cards = [...document.querySelectorAll('#panel .card')];
+          const locked = cards.filter((c) => c.classList.contains('locked'));
+          const unlocked = cards.filter((c) => !c.classList.contains('locked'));
+          const stored = (localStorage.getItem('whale-moe:achievements') || '').split(',').filter(Boolean);
+          return {
+            total: cards.length,
+            unlocked: unlocked.length,
+            stored: stored.length,
+            lockedNameHidden: locked.length === 0 ? true : locked.every((c) => (c.querySelector('.name') || {}).textContent === '未解锁的成就'),
+          };
+        })()`);
+        check('成就页列出全部 39 条', ach.total === 39, JSON.stringify({ total: ach.total }));
+        check(
+          '成就页：已解锁数与存档一致，未解锁的名称被隐藏',
+          ach.unlocked === ach.stored && ach.lockedNameHidden === true,
+          JSON.stringify(ach)
+        );
+
+        // ---- 6) 佩戴称号的 IPC 往返（有可观测效果）----
+        const equip = await growthWin.webContents.executeJavaScript(
+          `window.whaleGrowth.equipBadge('bond-lv5').then(() => localStorage.getItem('whale-moe:badge'))`
+        );
+        check('佩戴称号：IPC 往返生效', equip === 'bond-lv5', JSON.stringify({ badge: equip }));
+        await growthWin.webContents.executeJavaScript(`window.whaleGrowth.equipBadge('')`);
+
+        // 领取任务：只验通道是否通（没到领取条件时返回 ok:false 也算通）
+        const claim = await growthWin.webContents.executeJavaScript(
+          `window.whaleGrowth.claimQuest('signin-1').then((r) => r && typeof r.ok === 'boolean')`
+        );
+        check('领取任务：IPC 通道可用', claim === true, JSON.stringify({ claim }));
+
+        const shot = await captureImage(growthWin.webContents);
+        if (shot) {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, shot.toPNG());
+          const stats = analyzePixels(shot);
+          check('养成窗口渲染出内容（非空白）', stats.darkRatio > 0.003, JSON.stringify(stats));
+          log('[growth-probe] screenshot', target);
+        } else {
+          check('养成窗口渲染出内容（非空白）', false, '截图失败');
+        }
+      }
+
+      // ---- 5) 托盘入口 ----
+      const trayLabels = buildTrayTemplate().map((item) => item.label || `(${item.type})`);
+      check(
+        '托盘含「称号…」「成就…」',
+        trayLabels.includes('称号…') && trayLabels.includes('成就…'),
+        JSON.stringify(trayLabels)
+      );
+      const badgeItem = buildTrayTemplate().find((item) => item.label === '称号…');
+      if (badgeItem && growthWin && !growthWin.isDestroyed()) {
+        badgeItem.click();
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        const tabNow = await growthWin.webContents.executeJavaScript(
+          `(document.querySelector('#tabs button[aria-selected="true"]') || {}).dataset.tab`
+        );
+        check('托盘「称号…」把窗口切到称号页', tabNow === 'badges', JSON.stringify({ tabNow }));
+      } else {
+        check('托盘「称号…」把窗口切到称号页', false, '托盘项或窗口缺失');
+      }
+      // ---- 7) 天气端到端：从另一个窗口设城市 → 桌宠页面应主动预取 ----
+      // 必须从**另一个窗口**写，才能触发同源 storage 事件（同文档写不触发）——
+      // 这正是真实路径：城市是在设置窗口里改的。
+      const beforeCity = await win.webContents.executeJavaScript("localStorage.getItem('whale-moe:weatherCity')");
+      const setter = new BrowserWindow({
+        width: 400,
+        height: 300,
+        show: false,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
+      });
+      await setter.loadURL(`${server.url}/pet/settings.html`);
+      await setter.webContents.executeJavaScript("localStorage.setItem('whale-moe:weatherCity', '上海')");
+      const weather = await win.webContents.executeJavaScript(`(async () => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 20000) {
+          await new Promise((r) => setTimeout(r, 400));
+          const s = window.__dshWhaleMoeWeather;
+          if (s && s.current && Number.isFinite(s.current.temp)) {
+            return { temp: s.current.temp, code: s.current.code, ms: Date.now() - t0 };
+          }
+        }
+        return null;
+      })()`);
+      if (beforeCity === null) {
+        await setter.webContents.executeJavaScript("localStorage.removeItem('whale-moe:weatherCity')");
+      } else {
+        await setter.webContents.executeJavaScript(`localStorage.setItem('whale-moe:weatherCity', ${JSON.stringify(beforeCity)})`);
+      }
+      setter.destroy();
+      check('天气端到端：另一个窗口改城市 → 桌宠主动预取真实天气', Boolean(weather), JSON.stringify(weather));
+    } catch (error) {
+      log('[growth-probe] failed', error.message);
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    const expected = 13;
+    log(
+      '[growth-probe]',
+      results.length !== expected
+        ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
+        : failed === 0
+          ? `DONE 全部 ${expected} 项通过`
+          : `DONE ${failed}/${expected} 项未通过`
+    );
+    app.exit(failed === 0 && results.length === expected ? 0 : 1);
+  }, 3500);
+}
+
+// ---------------------------------------------------------------- 设置窗口探针
 /**
  * 覆盖职责划分与设置窗口两件事：
  *   1) 桌宠右键菜单只留交互项（不该再有「打开看板娘设置」）
@@ -706,8 +1011,8 @@ function runSettingsProbe() {
           rows: [...document.querySelectorAll('.row .name')].map((n) => n.textContent.trim()),
         }))()`);
         check(
-          '设置窗口按分类展示（4 类）',
-          structure.sections.length === 4,
+          '设置窗口按分类展示（5 类）',
+          structure.sections.length === 5 && structure.sections.includes('天气与余额'),
           JSON.stringify(structure.sections)
         );
         const expectedRows = [
@@ -715,13 +1020,21 @@ function runSettingsProbe() {
           '总是置顶', '跟随 DSH 工作状态', '开机自启',
           '大小', '位置',
           '重新加载页面', '数据目录', '运行日志',
+          '天气城市', '天气 API Key', '显示余额', '余额接口',
         ];
         const missing = expectedRows.filter((name) => !structure.rows.includes(name));
         check('设置窗口含全部可配置项', missing.length === 0, missing.length ? JSON.stringify(missing) : `${structure.rows.length} 项`);
 
         const [cw, ch] = settingsWin.getContentSize();
         const scrollH = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
-        check('窗口高度容得下全部内容（无滚动条）', scrollH <= ch, `content=${cw}x${ch} scrollHeight=${scrollH}`);
+        const scrollable = await settingsWin.webContents.executeJavaScript(
+          "getComputedStyle(document.body).overflowY === 'auto'"
+        );
+        check(
+          '窗口高度容得下全部内容（放不下时必须可滚动，不能裁掉）',
+          scrollH <= ch || scrollable === true,
+          `content=${cw}x${ch} scrollHeight=${scrollH} scrollable=${scrollable}`
+        );
         log('[settings-probe] disable-features =', app.commandLine.getSwitchValue('disable-features'));
         const image = await captureImage(settingsWin.webContents);
         if (image) {
@@ -834,8 +1147,8 @@ function runSettingsProbe() {
     const expected = 13;
     log(
       '[settings-probe]',
-      results.length < expected
-        ? `DONE 只跑到 ${results.length}/${expected} 项（中途出错），失败 ${failed} 项`
+      results.length !== expected
+        ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
         : failed === 0
           ? `DONE 全部 ${expected} 项通过`
           : `DONE ${failed}/${expected} 项未通过`
@@ -1003,6 +1316,39 @@ function registerIpc() {
     require('electron').shell.openPath(target).catch((error) => log('[shell] openPath failed', error.message));
   });
   ipcMain.on('shell:open-settings', () => openSettingsWindow());
+  ipcMain.on('shell:open-growth', (_event, tab) => openGrowthWindow(tab));
+
+  /*
+   * 养成的两个动作必须回到桌宠页面执行：领取任务要跑 applyGrowth / 成就算 /
+   * 粒子与台词，佩戴称号要派发 whale-moe-prefs-change 让她重画 —— 这些副作用
+   * 都在页面里。主进程直接把页面里的 hook 调一下，拿回结果即可。
+   */
+  ipcMain.handle('shell:claim-quest', async (_event, id) => {
+    if (!win || win.isDestroyed()) return { ok: false, error: '桌宠窗口未运行' };
+    try {
+      const done = await win.webContents.executeJavaScript(
+        `(typeof window.__dshWhaleMoeClaimQuest === 'function') ? window.__dshWhaleMoeClaimQuest(${JSON.stringify(String(id))}) : false`
+      );
+      log('[pet-action] claim-quest', String(id), '->', done);
+      return { ok: Boolean(done) };
+    } catch (error) {
+      log('[pet-action] claim-quest failed', error.message);
+      return { ok: false, error: error.message };
+    }
+  });
+  ipcMain.handle('shell:equip-badge', async (_event, id) => {
+    if (!win || win.isDestroyed()) return { ok: false, error: '桌宠窗口未运行' };
+    try {
+      await win.webContents.executeJavaScript(
+        `(typeof window.__dshWhaleMoeApplyBadge === 'function') ? window.__dshWhaleMoeApplyBadge(${JSON.stringify(String(id || ''))}) : null`
+      );
+      log('[pet-action] equip-badge', JSON.stringify(String(id || '')));
+      return { ok: true };
+    } catch (error) {
+      log('[pet-action] equip-badge failed', error.message);
+      return { ok: false, error: error.message };
+    }
+  });
   ipcMain.on('shell:quit', () => {
     isQuitting = true;
     app.quit();
@@ -1085,6 +1431,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
     globalShortcut.unregisterAll();
     stopDshWatcher();
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.destroy();
+    if (growthWin && !growthWin.isDestroyed()) growthWin.destroy();
     if (server) await server.close();
   });
 }

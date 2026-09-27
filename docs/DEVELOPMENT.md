@@ -256,7 +256,68 @@ win.once('ready-to-show', () => { win.show(); win.focus(); win.webContents.inval
 判断"要不要摘"用的是 `hasDshSettingsEntry()`：页面上真有 DSH 设置入口时不摘，
 这样把页面嵌回 DSH 时行为自动回到上游原样。
 
-## 5. DSH 工作状态联动
+## 5. 养成 / 图鉴与头顶浮层
+
+### 5.1 上游的两半：算法在 assets，UI 在 client.js
+
+上游这些功能的 **UI** 在 `lib/client.js`（DSH 设置面板那半边，本项目**没有** vendor），
+但**数据与规则**全在 `vendor/whale/whale-moe-core.js` 里 —— 它是 UMD：
+
+```js
+if (typeof module === "object" && module.exports) module.exports = api;
+if (root) root.DshWhaleMoeCore = api;
+```
+
+所以浏览器里是 `window.DshWhaleMoeCore`，Node 里可以直接 `require`。
+导出包含 `ACHIEVEMENTS`(39) / `BOND`(称号) / `QUEST_POOL` / `computeWeekSignin` /
+`refreshQuests` / `claimQuest` / `bondUnlocks` / `weatherText` / `formatBalance` …
+
+**结论：不重写任何养成算法**，只写 UI（`src/pet/growth.*`）。
+
+### 5.2 数据怎么拿：能同源就别用 IPC
+
+| 需求 | 通道 |
+| --- | --- |
+| 读养成状态（等级/成就/任务/签到/日记） | **直接读 `localStorage`**（同源） |
+| 统计规则（成就表、等级、里程碑） | `window.DshWhaleMoeCore` |
+| 领取任务 / 佩戴称号 | **IPC 回到桌宠页面**调 `__dshWhaleMoeClaimQuest` / `__dshWhaleMoeApplyBadge` |
+| 偏好类设置（开关/城市…） | 写 `localStorage`，页面收 `storage` 事件后派发 `whale-moe-prefs-change` |
+
+为什么领取得回页面：`claimQuestById` 里有 `applyGrowth`（好感/心情）、成就算、
+`burst()` 粒子、`announceUnlocks()` 台词 —— 这些都是页面里的副作用。
+主进程直接 `executeJavaScript` 调那个 hook 即可，不需要为它再搭一套消息协议。
+
+### 5.3 头顶浮层与天气预取
+
+齿轮 ⚙ 原本开合的是上游那个三开关面板，而开关已经进了设置窗口，
+于是壳层把这块位置改成"状态 + 入口"（`#dsh-whale-shell-hud`，挂在桌宠根节点下，
+沿用上游那套 `position:absolute; bottom:calc(100% + 10px)` 的贴头顶定位）。
+上游面板用一行 `display:none !important` 藏掉，齿轮的点击照旧 toggle，无副作用。
+
+**天气为什么要壳层自己拉**：上游只在 `idleChatTick` 里 `weatherEnsure()`，
+间隔 `IDLE_CHAT_MIN..MAX`（分钟级）且要求她正闲着、气泡空着 —— 设置里改完城市可能要等很久。
+壳层于是拉同一个 Open-Meteo 接口，并把结果写回 `window.__dshWhaleMoeWeather`：
+
+```js
+// root.__dshWhaleMoeWeather = weatherState  —— 同一个对象引用
+window.__dshWhaleMoeWeather.current = { temp, code, wind, humidity };
+window.__dshWhaleMoeWeather.fetchedAt = Date.now();
+```
+
+因为是同一引用，她的**天气特效、天气台词、浮层显示会一起用上**这份数据。
+上游自己到点也会照常刷新，两边不冲突。
+
+> 触发点是 `storage` 事件（城市是在**设置窗口**里改的）。
+> 注意：**同文档写 localStorage 不会触发自己的 storage 事件** ——
+> 写测试时必须在另一个窗口里写，否则会误判成功能坏了。
+
+### 5.4 余额接口为什么要 fetch 垫片
+
+上游把地址写死成 `http://127.0.0.1:3020/balance`，而桌面版希望它可配置。
+`src/pet/preshim.js` 在**上游脚本之前**加载，只拦截这一个 URL 并重写到
+`whale-moe:balanceEndpoint`，其它请求原样放行 —— `vendor/whale` 依旧零改动。
+
+## 6. DSH 工作状态联动
 
 上游会在"思考中/工作中/完成/出错"时切换立绘与状态签，判断依据是页面里的
 DOM 信号（`SIGNAL_BANKS`，只看存在性、不读业务文本）。桌面版不在 DSH 页面里，
@@ -328,7 +389,7 @@ npm run dsh:probe    # 走真实 IPC 推状态，读上游 __dshWhaleMoeDebug �
 curl http://127.0.0.1:38911/__shell/state   # 其中 dsh 字段即会话文件读到的状态
 ```
 
-## 6. 调试手段（看不到屏幕时靠这些）
+## 7. 调试手段（看不到屏幕时靠这些）
 
 ```bash
 npm run shot        # 启动 → 等 5 秒 → 截图 → 打印 DOM 状态 → 退出
@@ -367,7 +428,7 @@ npm run verify:shell   # 自动验证点击穿透（会真的移动指针，跑�
   `git -c http.proxy=http://127.0.0.1:7890 push origin main`。
   不要把它写进全局 `git config`，否则代理一关 git 就全废。
 
-## 7. 上游同步
+## 8. 上游同步
 
 ```bash
 npm run sync:upstream                 # 取上游最新 release tag
@@ -382,7 +443,7 @@ npm run check:vendor                  # 校验素材完整性
 同步后请跑一次 `npm run shot`，确认立绘仍能加载（上游若改了变量名，
 `layerLoaded: true` 这条会立刻暴露问题）。
 
-## 8. 打包（待做）
+## 9. 打包（待做）
 
 目前是开发态运行。要出免安装 exe 需要加 `electron-builder`：
 
@@ -393,7 +454,7 @@ npm i -D electron-builder
 并在 `package.json` 增加 `build` 段（`win.target: portable` / `nsis`）。
 注意 `vendor/` 必须打进 asar 或作为 extraResource 一起分发。
 
-## 9. 路线图 / 已知限制
+## 10. 路线图 / 已知限制
 
 - **工作状态联动**：上游靠 `MutationObserver` 观察 DSH 页面 DOM 来判断"正在跑工具"。
   独立宿主没有那个 DOM，需要另接信号源（DSH 事件流、或本地钩子）。

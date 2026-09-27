@@ -1,0 +1,264 @@
+/* 养成 / 图鉴窗口。复用上游的 --dsw-* 变量与兜底色，跟桌宠观感一致。 */
+
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --fg-dim: rgb(0 0 0 / 55%);
+  --bg: #f6f7f9;
+  --card: #fff;
+  --line: rgb(0 0 0 / 10%);
+  --accent: #4aa8ff;
+  --ok: #2ea043;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #eaeaea;
+    --fg-dim: rgb(255 255 255 / 55%);
+    --bg: #1c1d1f;
+    --card: #26282b;
+    --line: rgb(255 255 255 / 12%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  font: 13px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.summary {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.tabs button {
+  padding: 5px 11px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tabs button[aria-selected="true"] {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 7px;
+  padding: 9px 11px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.card.locked {
+  opacity: 0.45;
+}
+
+.card .grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.name {
+  font-size: 13px;
+}
+
+.desc {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.icon {
+  flex: 0 0 auto;
+  width: 26px;
+  font-size: 19px;
+  text-align: center;
+}
+
+.bar {
+  height: 5px;
+  margin-top: 6px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.pill {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+}
+
+.pill.done {
+  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+button.action {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+button.action:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.week .day {
+  padding: 8px 0;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.week .day.signed {
+  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.week .day.today {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.week .day .dow {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.week .day .mark {
+  font-size: 15px;
+}
+
+.milestones {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.milestones .pill {
+  flex: 0 0 auto;
+}
+
+.journal-item {
+  display: flex;
+  gap: 9px;
+  padding: 7px 2px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.journal-item time {
+  flex: 0 0 auto;
+  width: 84px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.empty {
+  padding: 18px 4px;
+  color: var(--fg-dim);
+}
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+footer button {
+  padding: 4px 12px;
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}

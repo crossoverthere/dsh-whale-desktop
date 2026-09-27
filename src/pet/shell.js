@@ -260,9 +260,15 @@
     panelCloseTarget = panel;
     api.log('info', '已给页面内偏好面板注入关闭按钮');
   }
-  // 桌宠根节点是后挂到 body 的，出现后再注入
+  // 桌宠根节点是后挂到 body 的，出现后再注入。
+  // 注意：这里**不能**同步调用 ensureHud() —— HUD_ID 用 const 声明在本文件更靠后的位置，
+  // 提前调用会踩暂时性死区（TDZ）抛错，把后面整段脚本都带停。
+  // 观察器回调是异步的，那时声明已经执行过，调用是安全的。
   ensurePanelClose();
-  new MutationObserver(() => ensurePanelClose()).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver(() => {
+    ensurePanelClose();
+    ensureHud();
+  }).observe(document.body, { childList: true, subtree: true });
 
   // 点面板外面关闭：上游给 rootNode 挂了 stopPropagation，
   // 所以"能冒泡到 document 的点击"天然就是"点在桌宠之外"。
@@ -283,12 +289,272 @@
     }
   });
 
+  // ---------- 头顶浮层：天气 / 余额 / 称号 / 养成入口 ----------
+  // 上游那块位置原本是三个开关（看板娘/台词气泡/粒子效果）——它们已经进了设置窗口，
+  // 于是壳层把这块位置改造成"状态 + 入口"。齿轮 ⚙ 仍然负责开合它。
+  const HUD_ID = 'dsh-whale-shell-hud';
+  let hudTimer = null;
+
+  function hudReadWeather() {
+    const state = window.__dshWhaleMoeWeather || {};
+    const core = window.DshWhaleMoeCore;
+    const city = String(state.city || '').trim();
+    if (!city) {
+      return { main: '未设置城市', sub: '点这里去设置', tone: 'muted' };
+    }
+    const current = state.current;
+    if (!current) {
+      return { main: city, sub: state.status === 'error' ? '获取失败' : '获取中…', tone: 'muted' };
+    }
+    const text = core && core.weatherText ? core.weatherText(current.code) : { emoji: '🌡️', label: '' };
+    return { main: `${text.emoji} ${city} ${Math.round(current.temp)}°`, sub: text.label, tone: 'ok' };
+  }
+
+  function hudReadBalance() {
+    let enabled = false;
+    try {
+      enabled = localStorage.getItem('whale-moe:balance') === '1';
+    } catch (error) {
+      enabled = false;
+    }
+    if (!enabled) {
+      return { main: '未启用余额', sub: '点这里去设置', tone: 'muted' };
+    }
+    const state = window.__dshWhaleMoeBalance;
+    if (!state || !state.ok) {
+      return { main: '余额不可用', sub: '余额接口无响应', tone: 'muted' };
+    }
+    const core = window.DshWhaleMoeCore;
+    const tier = core && core.formatBalance ? core.formatBalance(state.amount, state.currency, false) : '';
+    return { main: `💰 ${tier || state.tier}`, sub: `${state.currency} ${Math.round(state.amount)}`, tone: 'ok' };
+  }
+
+  function hudReadBadge() {
+    let id = '';
+    try {
+      id = localStorage.getItem('whale-moe:badge') || '';
+    } catch (error) {
+      id = '';
+    }
+    const core = window.DshWhaleMoeCore;
+    const badge = core && core.BOND ? core.BOND.badges.find((b) => b.id === id) : null;
+    return badge ? { main: `🏅 ${badge.name}`, sub: '点这里看称号', tone: 'ok' } : { main: '未佩戴称号', sub: '点这里看称号', tone: 'muted' };
+  }
+
+  // 天气预取。
+  // 上游只在**空闲聊天**里才 weatherEnsure()（间隔数分钟且要求她正闲着），
+  // 于是「设置里填了城市 → 浮层一直显示获取中」可能要等很久。
+  // 这里由壳层主动拉一次同样的 Open-Meteo 接口，并把结果写回
+  // `window.__dshWhaleMoeWeather` —— 它就是上游闭包里的 weatherState（同一引用），
+  // 所以她的天气特效、天气台词、浮层显示会一起用上这份数据。
+  // vendor 不改；上游自己到点照常刷新，两边不冲突。
+  const WEATHER_FRESH_MS = 2 * 3600 * 1000;
+  let weatherPending = false;
+
+  function weatherStored(key) {
+    try {
+      return (localStorage.getItem('whale-moe:' + key) || '').trim();
+    } catch (error) {
+      return '';
+    }
+  }
+
+  async function ensureWeatherFresh(force) {
+    const state = window.__dshWhaleMoeWeather;
+    const city = weatherStored('weatherCity');
+    if (!state || !city || weatherPending) {
+      return;
+    }
+    const fresh = state.current && Date.now() - (state.fetchedAt || 0) < WEATHER_FRESH_MS;
+    if (!force && fresh) {
+      return;
+    }
+    weatherPending = true;
+    try {
+      const key = weatherStored('weatherKey');
+      const keyParam = key ? `&apikey=${encodeURIComponent(key)}` : '';
+      const geo = await (await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh&format=json${keyParam}`
+      )).json();
+      const hit = geo && Array.isArray(geo.results) ? geo.results[0] : null;
+      if (!hit) {
+        throw new Error('城市未找到');
+      }
+      const wx = await (await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${hit.latitude}&longitude=${hit.longitude}` +
+          `&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m&timezone=auto${keyParam}`
+      )).json();
+      if (!wx || !wx.current) {
+        throw new Error('无天气数据');
+      }
+      state.current = {
+        temp: Number(wx.current.temperature_2m),
+        code: String(wx.current.weather_code),
+        wind: Number(wx.current.wind_speed_10m || 0),
+        humidity: Number(wx.current.relative_humidity_2m || 0),
+      };
+      state.fetchedAt = Date.now();
+      state.status = 'ok';
+      state.city = city;
+      state.key = key;
+      try {
+        localStorage.setItem('whale-moe:weatherLat', String(hit.latitude));
+        localStorage.setItem('whale-moe:weatherLon', String(hit.longitude));
+      } catch (error) {
+        /* 缓存坐标失败无所谓 */
+      }
+      api.log('info', `天气已预取：${city} ${Math.round(state.current.temp)}°`);
+    } catch (error) {
+      state.status = 'error';
+      api.log('error', 'weather prefetch failed: ' + error.message);
+    } finally {
+      weatherPending = false;
+      refreshHud();
+    }
+  }
+
+  function hudRow(key, loader, onClick) {
+    const row = document.createElement('div');
+    row.className = 'hud-row';
+    row.setAttribute('data-hud-row', key);
+    const main = document.createElement('span');
+    main.className = 'k';
+    const sub = document.createElement('span');
+    sub.className = 'v';
+    row.append(main, sub);
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    row.__update = () => {
+      const info = loader();
+      main.textContent = info.main;
+      sub.textContent = info.sub || '';
+      row.setAttribute('data-tone', info.tone || 'muted');
+    };
+    return row;
+  }
+
+  function ensureHud() {
+    const existing = document.getElementById(HUD_ID);
+    if (existing && existing.isConnected) {
+      return existing;
+    }
+    const rootNode = document.querySelector('[data-dsh-whale-root]');
+    if (!rootNode) {
+      return null;
+    }
+    const hud = document.createElement('div');
+    hud.id = HUD_ID;
+    hud.hidden = true;
+
+    const toSettings = () => {
+      if (typeof api.openSettings === 'function') {
+        api.openSettings();
+      }
+    };
+    const toGrowth = (tab) => {
+      if (typeof api.openGrowth === 'function') {
+        api.openGrowth(tab);
+      }
+    };
+
+    const weatherRow = hudRow('weather', hudReadWeather, toSettings);
+    const balanceRow = hudRow('balance', hudReadBalance, toSettings);
+    const badgeRow = hudRow('badge', hudReadBadge, () => toGrowth('badges'));
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'hud-action';
+    action.textContent = '日常养成';
+    action.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toGrowth('quests');
+    });
+
+    hud.append(weatherRow, balanceRow, badgeRow, action);
+    hud.__refresh = () => {
+      weatherRow.__update();
+      balanceRow.__update();
+      badgeRow.__update();
+    };
+    rootNode.append(hud);
+    hud.__refresh();
+    api.log('info', '头顶浮层已就绪（天气 / 余额 / 称号 / 日常养成）');
+    return hud;
+  }
+
+  function refreshHud() {
+    const hud = document.getElementById(HUD_ID);
+    if (hud && hud.__refresh) {
+      hud.__refresh();
+    }
+    // 顺带保证天气是新的（新鲜时零开销，直接返回）
+    ensureWeatherFresh(false);
+  }
+
+  function setHudVisible(visible) {
+    const hud = ensureHud();
+    if (!hud) {
+      return false;
+    }
+    hud.hidden = !visible;
+    if (visible) {
+      refreshHud();
+      if (!hudTimer) {
+        // 天气/余额是异步来的，浮层开着时定期刷一下
+        hudTimer = window.setInterval(refreshHud, 1500);
+      }
+    } else if (hudTimer) {
+      window.clearInterval(hudTimer);
+      hudTimer = null;
+    }
+    return true;
+  }
+
+  // 齿轮 ⚙ 改开合我们这块浮层。
+  // 上游的 handler 仍会 toggle 那个已被我们隐藏的偏好面板，无副作用，不去抢它。
+  document.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target;
+      if (!target || typeof target.closest !== 'function') {
+        return;
+      }
+      if (!target.closest('[data-dsh-whale-gear], [data-dsh-whale-gear-mini]')) {
+        return;
+      }
+      const hud = ensureHud();
+      if (hud) {
+        setHudVisible(hud.hidden);
+      }
+    },
+    true
+  );
+
+  // 点桌宠之外收起浮层（能冒泡到 document 的点击 = 点在桌宠之外）
+  document.addEventListener('click', () => {
+    const hud = document.getElementById(HUD_ID);
+    if (hud && !hud.hidden) {
+      setHudVisible(false);
+    }
+  });
+
+  // 声明都已执行，这里可以安全地先建一次（桌宠根节点通常已经在了）
+  ensureHud();
+  // 启动时若已配了城市，先把天气拉一次，免得第一次打开浮层还要等
+  window.setTimeout(() => ensureWeatherFresh(false), 1200);
+
   // ---------- 独立设置窗口改了偏好后，让上游重新读一遍 ----------
   // 两个窗口同源，所以走 storage 事件就够了，不需要额外 IPC。
   window.addEventListener('storage', (event) => {
     const key = event.key || '';
     if (!key.startsWith('whale-moe:')) {
       return;
+    }
+    // 城市/Key 变了就立刻重拉天气，别等她下次闲聊
+    if (key === 'whale-moe:weatherCity' || key === 'whale-moe:weatherKey') {
+      ensureWeatherFresh(true);
     }
     window.dispatchEvent(
       new CustomEvent('whale-moe-prefs-change', {
