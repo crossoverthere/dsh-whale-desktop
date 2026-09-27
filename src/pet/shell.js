@@ -162,6 +162,64 @@
     }
   }).observe(document.body, { childList: true, subtree: true });
 
+  // ---------- 右键菜单「打开看板娘设置」在桌面模式下的替代行为 ----------
+  // 上游那一项是去找 **DSH 页面**的设置入口（`[data-slot="sidebar.settings"] button`
+  // → `[data-slot="settings.trigger"]` → 文本"设置"兜底），独立桌面版没有 DSH 页面，
+  // 点了自然毫无反应。
+  //
+  // 修在壳层：页面上确实没有 DSH 入口时，改为打开桌宠**自带的偏好面板**
+  // （就是齿轮 ⚙ 那个，等价物），vendor/whale 依旧不改。
+  const SETTINGS_ITEM_LABEL = '打开看板娘设置';
+
+  /** 页面里到底有没有 DSH 的设置入口（有就让上游自己处理，别抢）。 */
+  function hasDshSettingsEntry() {
+    if (document.querySelector('[data-slot="sidebar.settings"] button')) {
+      return true;
+    }
+    const trigger = document.querySelector('[data-slot="settings.trigger"]');
+    if (trigger && typeof trigger.closest === 'function' && trigger.closest('button')) {
+      return true;
+    }
+    return Array.from(document.querySelectorAll('button')).some(
+      (node) => (node.textContent || '').trim() === '设置'
+    );
+  }
+
+  /** 打开桌宠自带的偏好面板（等价于点齿轮 ⚙）。 */
+  function openPetPrefs() {
+    const prefs = document.querySelector('[data-dsh-whale-prefs]');
+    if (!prefs) {
+      api.log('error', 'openPetPrefs: 找不到 [data-dsh-whale-prefs]');
+      return false;
+    }
+    prefs.hidden = false;
+    api.log('info', '已用桌宠自带偏好面板替代「打开看板娘设置」');
+    return true;
+  }
+
+  // 用捕获阶段：此时右键菜单还挂在 DOM 上，判定最可靠。
+  // 不阻止上游 handler（它会负责关掉右键菜单），只在其后补一个动作。
+  document.addEventListener(
+    'click',
+    (event) => {
+      const button =
+        event.target && typeof event.target.closest === 'function'
+          ? event.target.closest('[data-dsh-whale-context] button')
+          : null;
+      if (!button) {
+        return;
+      }
+      if ((button.textContent || '').trim() !== SETTINGS_ITEM_LABEL) {
+        return;
+      }
+      if (hasDshSettingsEntry()) {
+        return; // 有 DSH 入口，上游自己能处理
+      }
+      window.setTimeout(openPetPrefs, 0);
+    },
+    true
+  );
+
   // ---------- DSH 工作状态 → 上游信号合成 ----------
   // 上游判断"在忙"靠的是页面里存在这些 DOM 信号（只看存在性，不读业务文本）：
   //   thinking → [data-status="pending"]

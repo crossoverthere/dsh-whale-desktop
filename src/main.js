@@ -505,6 +505,46 @@ function runMenuProbe() {
         && measured.overflowLeft === 0 && measured.overflowTop === 0;
       log('[menu-probe]', ok ? 'PASS 菜单完全在屏幕内' : 'FAIL 菜单溢出视口');
       log('[menu-probe] screenshot', target);
+
+      // ---- 第二阶段：点「打开看板娘设置」应当打开桌宠自带的偏好面板 ----
+      // 上游那一项是找 DSH 页面的设置入口，桌面模式下必然找不到；
+      // 壳层应接管并打开 [data-dsh-whale-prefs]。
+      const clicked = await win.webContents.executeJavaScript(`(() => {
+        const menu = document.querySelector('[data-dsh-whale-context]');
+        if (!menu) return { error: 'context menu gone' };
+        const btn = [...menu.querySelectorAll('button')].find(
+          (n) => (n.textContent || '').trim() === '打开看板娘设置'
+        );
+        if (!btn) return { error: 'settings item not found', labels: [...menu.querySelectorAll('button')].map((n) => n.textContent) };
+        btn.click();
+        return { clicked: true, menuGone: !document.querySelector('[data-dsh-whale-context]') };
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
+      const prefs = await win.webContents.executeJavaScript(`(() => {
+        const panel = document.querySelector('[data-dsh-whale-prefs]');
+        if (!panel) return { found: false };
+        const r = panel.getBoundingClientRect();
+        const style = getComputedStyle(panel);
+        return {
+          found: true,
+          hidden: panel.hidden,
+          display: style.display,
+          width: Math.round(r.width),
+          height: Math.round(r.height),
+          visible: !panel.hidden && style.display !== 'none' && r.width > 1 && r.height > 1,
+        };
+      })()`);
+      const target2 = typeof argValue('menu-probe') === 'string'
+        ? argValue('menu-probe').replace(/\.png$/i, '-settings.png')
+        : path.join(ROOT, 'tmp', 'menu-probe-settings.png');
+      fs.writeFileSync(target2, (await win.webContents.capturePage()).toPNG());
+      log('[menu-probe] click', JSON.stringify(clicked));
+      log('[menu-probe] prefs', JSON.stringify(prefs));
+      log('[menu-probe]', clicked && clicked.clicked && prefs && prefs.visible
+        ? 'PASS 「打开看板娘设置」已打开桌宠偏好面板'
+        : 'FAIL 「打开看板娘设置」没有打开偏好面板');
+      log('[menu-probe] screenshot2', target2);
     } catch (error) {
       log('[menu-probe] failed', error.message);
     }

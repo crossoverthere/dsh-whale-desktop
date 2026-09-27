@@ -130,8 +130,31 @@ menu.style.top  = Math.min(y, root.innerHeight - 160) + "px";
 回归验证：
 
 ```bash
-npm run menu:probe   # 在右下角模拟右键，量出溢出像素并打印 PASS/FAIL
+npm run menu:probe   # 1) 右下角模拟右键，量出溢出像素并打印 PASS/FAIL
+                     # 2) 点「打开看板娘设置」，断言偏好面板真的打开
 ```
+
+### 4.6 右键菜单「打开看板娘设置」的桌面替代
+
+上游那一项的行动是去找 **DSH 页面**的设置入口：
+
+```js
+var btn = doc.querySelector('[data-slot="sidebar.settings"] button');
+// 依次回落到 [data-slot="settings.trigger"] → 文本"设置"的按钮
+if (btn) btn.click();
+```
+
+独立桌面版没有 DSH 页面，三个回落全部落空，于是**点了毫无反应**（不是报错，是静默）。
+
+壳层在**捕获阶段**挂一个 `click` 监听（此时右键菜单还在 DOM 上，判定最可靠）：
+
+- 目标是 `[data-dsh-whale-context] button` 且文本等于「打开看板娘设置」
+- 且 `hasDshSettingsEntry()` 为假（页面里确实没有 DSH 入口）
+- → `setTimeout(openPetPrefs, 0)`
+
+不 `preventDefault`、不 `stopPropagation`：上游的 handler 仍要跑，它负责把右键菜单移除；
+我们只是在它之后再打开桌宠自带的偏好面板 `[data-dsh-whale-prefs]`（等价于点击齿轮 ⚙）。
+真有 DSH 入口时（例如将来把它嵌回 DSH 页面）则不抢，行为回到上游原样。
 
 ## 5. DSH 工作状态联动
 
