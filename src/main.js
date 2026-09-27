@@ -857,7 +857,7 @@ function runGrowthProbe() {
           hud.found &&
             hud.parentIsRoot &&
             (hud.rows || []).join(',') === 'weather,balance' &&
-            (hud.actions || []).join(',') === '余额查询,日常养成'
+            (hud.actions || []).join(',') === '日常养成,余额查询'
         ),
         JSON.stringify(hud)
       );
@@ -886,7 +886,7 @@ function runGrowthProbe() {
         JSON.stringify(shown)
       );
       check(
-        '两个入口同一行且等宽（余额查询在左、日常养成在右）',
+        '两个入口同一行且等宽（日常养成在左、余额查询在右）',
         (shown.actionBoxes || []).length === 2 &&
           shown.actionBoxes[0].top === shown.actionBoxes[1].top &&
           Math.abs(shown.actionBoxes[0].w - shown.actionBoxes[1].w) <= 1 &&
@@ -905,12 +905,16 @@ function runGrowthProbe() {
       }
 
       // ---- 3) 「日常养成」打开养成窗口 ----
-      const clicked = await win.webContents.executeJavaScript(`(() => {
-        const btn = document.querySelector('#dsh-whale-shell-hud [data-hud-action="growth"]');
-        if (!btn) return false;
+      const growthClick = await win.webContents.executeJavaScript(`(() => {
+        const hud = document.getElementById('dsh-whale-shell-hud');
+        const btn = hud.querySelector('[data-hud-action="growth"]');
+        if (!btn) return { clicked: false };
         btn.click();
-        return true;
+        // 点选项应立刻收起浮层（不要让菜单杵在头顶挡视线）
+        return { clicked: true, hiddenAfter: hud.hidden };
       })()`);
+      const clicked = growthClick.clicked;
+      check('点选项后浮层自动收起（日常养成）', growthClick.hiddenAfter === true, JSON.stringify(growthClick));
       await new Promise((resolve) => setTimeout(resolve, 2200));
       const winInfo = growthWin && !growthWin.isDestroyed()
         ? { exists: true, visible: growthWin.isVisible(), title: growthWin.getTitle() }
@@ -1092,11 +1096,18 @@ function runGrowthProbe() {
        * 精确的账本算术由 scripts/test-cost.mjs 覆盖，这里只管四个分句是否都到位。
        * 台词是逐字打出来的，所以轮询到整句匹配为止。
        */
-      await win.webContents.executeJavaScript(`(() => {
-        const btn = document.querySelector('#dsh-whale-shell-hud [data-hud-action="balance-query"]');
+      const balanceQueryClick = await win.webContents.executeJavaScript(`(() => {
+        const hud = document.getElementById('dsh-whale-shell-hud');
+        hud.hidden = false; // 上次点完已经收起了，这里先摊开再点
+        const btn = hud.querySelector('[data-hud-action="balance-query"]');
         if (btn) btn.click();
-        return Boolean(btn);
+        return { clicked: Boolean(btn), hiddenAfter: hud.hidden };
       })()`);
+      check(
+        '点选项后浮层自动收起（余额查询）',
+        balanceQueryClick.clicked === true && balanceQueryClick.hiddenAfter === true,
+        JSON.stringify(balanceQueryClick)
+      );
       const balanceLinePattern = /^当前余额为 CNY 888\.50，状态为很充裕，今日共计消耗 .+ tokens，消费 .+ 元$/;
       let balanceLine = '';
       const balanceDeadline = Date.now() + 9000;
@@ -1156,7 +1167,7 @@ function runGrowthProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 18;
+    const expected = 20;
     log(
       '[growth-probe]',
       results.length !== expected

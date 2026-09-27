@@ -451,12 +451,25 @@
       }
     };
 
-    const weatherRow = hudRow('weather', hudReadWeather, toSettings);
-    const balanceRow = hudRow('balance', hudReadBalance, toSettings);
+    /*
+     * 点选项就收起浮层。
+     *
+     * 原来这里只 stopPropagation（防止点浮层时被"点外面收起"的 document 监听收掉），
+     * 结果点完选项浮层还杵在头顶 —— 而这两个入口都会打开别的窗口/冒出台词，
+     * 浮层留着既挡视线又显得没反应。所以：**先收起，再执行动作**（动作抛异常也已收起）。
+     * 行（天气/余额）同理 —— 它们也是"点一下去别处"的入口。
+     */
+    const closeAnd = (fn) => () => {
+      setHudVisible(false);
+      fn();
+    };
+
+    const weatherRow = hudRow('weather', hudReadWeather, closeAnd(toSettings));
+    const balanceRow = hudRow('balance', hudReadBalance, closeAnd(toSettings));
 
     /*
      * 入口按钮：两个并排、等宽（.hud-actions 里 flex:1），
-     * 所以文案长短不同也不会一宽一窄。顺序按用户要求：余额查询在左、日常养成在右。
+     * 所以文案长短不同也不会一宽一窄。顺序：日常养成在左、余额查询在右。
      */
     const actions = document.createElement('div');
     actions.className = 'hud-actions';
@@ -469,16 +482,17 @@
       button.textContent = label;
       button.addEventListener('click', (event) => {
         event.stopPropagation();
+        setHudVisible(false);
         onClick(button);
       });
       actions.append(button);
       return button;
     }
 
+    hudAction('growth', '日常养成', () => toGrowth('quests'));
     hudAction('balance-query', '余额查询', (button) => {
       queryBalance(button);
     });
-    hudAction('growth', '日常养成', () => toGrowth('quests'));
 
     hud.append(weatherRow, balanceRow, actions);
     hud.__refresh = () => {
@@ -487,7 +501,7 @@
     };
     rootNode.append(hud);
     hud.__refresh();
-    api.log('info', '头顶浮层已就绪（天气 / 余额 / 余额查询 / 日常养成）');
+    api.log('info', '头顶浮层已就绪（天气 / 余额 / 日常养成 / 余额查询）');
     return hud;
   }
 

@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-desktop",
   "productName": "鲸鱼娘桌宠",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "桌面级鲸鱼娘看板娘：把 dsh-whale-musume 的桌宠本体从 DSH 网页里解放出来，做成透明置顶、可点击穿透的 Windows 桌面挂件。",
   "main": "src/main.js",
   "author": "crossoverthere <1433065523@qq.com>",
