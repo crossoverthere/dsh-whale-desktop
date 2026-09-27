@@ -1,0 +1,25 @@
+# 统一换行，避免跨平台 diff 噪音
+* text=auto
+
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Windows 脚本：PowerShell 5.1 需要 UTF-8 BOM + CRLF，别让 git 改动它
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制
+*.webp binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.7z binary
+*.exe binary
