@@ -81,6 +81,20 @@ node node_modules/electron/install.js
 那是 DSH 的本地余额代理（`127.0.0.1:3020`）。独立运行时它不存在，
 桌宠会静默失败，不影响其它功能。
 
+**`git push` 报 `Recv failure: Connection was reset`**
+这台机器上 GitHub 的 API 与 codeload 都直连正常，但 git 的 **push 端点**
+（`git-receive-pack`）会被重置。用仓库自带的推送助手：
+
+```bash
+pwsh -File scripts/push.ps1        # 检测到本机 Clash 代理就自动走代理
+```
+
+它只对本次命令生效，不写进 git 全局配置。也可以手动：
+
+```bash
+git -c http.proxy=http://127.0.0.1:7890 push origin main
+```
+
 ---
 
 ## 路线图

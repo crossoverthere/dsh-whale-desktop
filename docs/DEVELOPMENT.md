@@ -104,6 +104,11 @@ npm run verify:shell   # 自动验证点击穿透（会真的移动指针，跑�
   $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
   node node_modules/electron/install.js
   ```
+- **`git push` 会被重置**，而 `api.github.com` / `codeload` 直连正常：
+  push 走的是 `git-receive-pack`，该端点在国内常被掐。
+  用 `scripts/push.ps1`（自动判断本机代理），或
+  `git -c http.proxy=http://127.0.0.1:7890 push origin main`。
+  不要把它写进全局 `git config`，否则代理一关 git 就全废。
 
 ## 6. 上游同步
 
