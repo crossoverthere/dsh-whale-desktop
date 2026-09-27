@@ -261,6 +261,14 @@ win.once('ready-to-show', () => { win.show(); win.focus(); win.webContents.inval
 
 ## 5. 养成 / 图鉴与头顶浮层
 
+### 5.0 入口只在气泡里（不占托盘）
+
+称号/成就**不放托盘菜单**：它们本质是"养成"的一部分，入口统一收在
+气泡齿轮 ⚙ →「日常养成」里（窗口内的 5 个标签页）。托盘只留随手就要用的东西 ——
+菜单每多一行，"退出"就往下挪一行，这类菜单能短则短。
+
+换来的约束：养成窗口必须能从 HUD 打开，且窗口内必须能切到称号页/成就页。
+这两点在 `growth:probe` 里各有一条断言（去掉入口时，功能不能跟着一起消失）。
 ### 5.1 上游的两半：算法在 assets，UI 在 client.js
 
 上游这些功能的 **UI** 在 `lib/client.js`（DSH 设置面板那半边，本项目**没有** vendor），
@@ -324,11 +332,11 @@ window.__dshWhaleMoeWeather.fetchedAt = Date.now();
 
 上游要的形状与 DeepSeek 官方接口不同：
 
-``
+```
 官方 GET https://api.deepseek.com/user/balance
   → { is_available, balance_infos: [ { currency, total_balance, granted_balance, topped_up_balance } ] }
 上游 { ok: true, balances: [ { currency, totalBalance } ] }
-``
+```
 
 所以 src/balance-proxy.js 做三件事：取 Key、转字段、**补 CORS 头**。
 
@@ -491,6 +499,28 @@ npm run say:probe    # 5 项端到端断言：可见气泡里的完整文本 + �
 `say:probe` 断言的是**气泡里可见的完整文本**，而不是"window 上有个函数" ——
 钩子存在 ≠ 话说得出来（气泡节点可能没建、台词可能被 `localizeLine` 改写、
 气泡可能没被取消隐藏）。台词是逐字打出来的，所以探针会轮询到文本打满为止。
+
+## 6.6 设置窗口：二级菜单与"量出来的高度"
+
+设置项到了二十多个，全铺一屏既长又难找。现在左侧一级分类、右侧对应设置。
+
+两条实现约定（都是为了避免"加了东西忘同步"）：
+
+1. **左侧导航由 section 生成**：HTML 里只写
+   `<section data-panel="env"><h2>天气与余额</h2>…</section>`，
+   导航项文案取 h2。加一屏就自动多一个导航项，不存在漏加或文案不一致。
+2. **高度由页面量、报给主进程**（`shell:settings-size`）。两栏布局下
+   "最高的一屏"只有页面知道；主进程读不到渲染进程的布局。
+
+量高度这件事有个坑值得记下来：**不能用 `body.scrollHeight`**。
+它的下限是可视高度 —— 窗口偏高时量到的就是窗口高度本身，于是永远缩不回去。
+所以按"外层留白 + 标题 + 最高的一屏 + 底栏"逐项相加
+（`settings.js` 的 `naturalHeight`）。为此 CSS 里 `.shell / .pane / .rail`
+**刻意不留纵向 margin**，否则那个和就对不上了。
+
+取"最高的一屏"而不是"当前这一屏"，是为了让窗口高度固定：切分类时窗口忽高忽低很晃眼。
+另外主进程套用时会 +4px 余量：`offsetHeight` 不含子元素的下外边距，
+少这几像素就会平白多出一条滚动条。
 
 ## 7. 调试手段（看不到屏幕时靠这些）
 

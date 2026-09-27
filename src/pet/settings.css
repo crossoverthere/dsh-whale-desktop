@@ -1,11 +1,12 @@
 /* 独立设置窗口的样式。
-   刻意不依赖上游 CSS：这个窗口不是"页面内浮层"，而是一个正常的应用窗口。 */
+   刻意不依赖上游 CSS：这个窗口不是"页面内浮层"，而是一个正常的应用窗口。
+   但配色与卡片风格跟养成窗口 / 桌宠一致（同一组 --fg/--card/--accent 变量）。 */
 
 :root {
   color-scheme: light dark;
   --fg: #1a1a1a;
   --fg-dim: rgb(0 0 0 / 55%);
-  --bg: #fafafa;
+  --bg: #f6f7f9;
   --card: #fff;
   --line: rgb(0 0 0 / 10%);
   --accent: #4aa8ff;
@@ -15,8 +16,8 @@
   :root {
     --fg: #eaeaea;
     --fg-dim: rgb(255 255 255 / 55%);
-    --bg: #1f1f1f;
-    --card: #2a2a2a;
+    --bg: #1c1d1f;
+    --card: #26282b;
     --line: rgb(255 255 255 / 12%);
   }
 }
@@ -33,7 +34,7 @@ body {
 
 body {
   padding: 10px 14px 8px;
-  /* 1.45 而不是 1.5：这个窗口有近 20 行，行高每省 0.05 就是十几像素 */
+  /* 1.45 而不是 1.5：设置项有二十来行，行高每省 0.05 就是十几像素 */
   font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--fg);
   background: var(--bg);
@@ -52,23 +53,67 @@ h1 {
 }
 
 h2 {
-  margin: 0 0 5px 2px;
+  margin: 0 0 6px 2px;
   font-size: 11px;
   font-weight: 600;
   color: var(--fg-dim);
   letter-spacing: 0.6px;
 }
 
-section {
-  margin-bottom: 7px;
+/*
+  两栏：左窄（一级分类）+ 右宽（当前分类的设置）。
+  .shell 与 .pane / .rail 都**不能有纵向 margin**：
+  settings.js 量内容高度时是按"标题 + 最高的一屏 + 底栏 + 留白"相加的，
+  多一个 margin 就会量少几像素（表现是最后一行的下边框被切掉一点）。
+*/
+.shell {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
 }
 
-/* 双列：6 个分类单列排下来近 1300px，太高了；两列约 660px */
-.grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 12px;
-  align-items: start;
+.rail {
+  display: flex;
+  flex: 0 0 136px;
+  flex-direction: column;
+  gap: 4px;
+  align-self: stretch;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.rail button {
+  padding: 7px 10px;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.rail button:hover {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+/* 选中态与养成窗口的标签页同一套做法：底色换成强调色 */
+.rail button[aria-selected="true"] {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.pane {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pane section[hidden] {
+  display: none;
 }
 
 .row {
@@ -146,7 +191,7 @@ select {
 }
 
 .text-input {
-  flex: 0 1 190px;
+  flex: 0 1 240px;
   min-width: 90px;
   padding: 4px 7px;
   font: inherit;
@@ -193,8 +238,13 @@ select {
   cursor: pointer;
 }
 
-.action:hover {
+.action:hover:not(:disabled) {
   border-color: var(--accent);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .foot {

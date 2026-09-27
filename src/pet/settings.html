@@ -11,36 +11,45 @@
 <body>
   <h1>看板娘设置</h1>
 
-  <div class="grid">
-    <section>
-      <h2>看板娘</h2>
-      <div class="group" id="group-pet"></div>
-    </section>
+  <!--
+    二级菜单：左边是一级分类，点哪一类右边就显示哪一屏。
+    左侧导航**不写死**在这里 —— 由 settings.js 依下面的 section 生成，
+    这样"加了一屏却忘了加导航项"这种漂移不可能发生（导航项文案就用 h2）。
+  -->
+  <div class="shell">
+    <nav class="rail" id="rail" aria-label="设置分类"></nav>
 
-    <section>
-      <h2>窗口与状态</h2>
-      <div class="group" id="group-window"></div>
-    </section>
+    <main class="pane" id="pane">
+      <section data-panel="pet">
+        <h2>看板娘</h2>
+        <div class="group" id="group-pet"></div>
+      </section>
 
-    <section>
-      <h2>大小与位置</h2>
-      <div class="group" id="group-size"></div>
-    </section>
+      <section data-panel="appearance">
+        <h2>窗口与状态</h2>
+        <div class="group" id="group-window"></div>
+      </section>
 
-    <section>
-      <h2>维护</h2>
-      <div class="group" id="group-maint"></div>
-    </section>
+      <section data-panel="size">
+        <h2>大小与位置</h2>
+        <div class="group" id="group-size"></div>
+      </section>
 
-    <section>
-      <h2>天气与余额</h2>
-      <div class="group" id="group-env"></div>
-    </section>
+      <section data-panel="maint">
+        <h2>维护</h2>
+        <div class="group" id="group-maint"></div>
+      </section>
 
-    <section>
-      <h2>花费播报</h2>
-      <div class="group" id="group-cost"></div>
-    </section>
+      <section data-panel="env">
+        <h2>天气与余额</h2>
+        <div class="group" id="group-env"></div>
+      </section>
+
+      <section data-panel="cost">
+        <h2>花费播报</h2>
+        <div class="group" id="group-cost"></div>
+      </section>
+    </main>
   </div>
 
   <div class="foot">

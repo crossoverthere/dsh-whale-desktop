@@ -18,4 +18,6 @@ contextBridge.exposeInMainWorld('whaleSettings', {
   appInfo: () => ipcRenderer.invoke('shell:app-info'),
   /** 让她说一句话（设置窗口的"测试播报"按钮）。 */
   say: (text) => ipcRenderer.invoke('shell:say', text),
+  /** 上报"内容自然高度"：窗口尺寸由页面量、主进程设（见 settings.js 的 naturalHeight）。 */
+  setContentHeight: (height) => ipcRenderer.send('shell:settings-size', height),
 });

@@ -498,12 +498,11 @@ function openSettingsWindow() {
   }
   settingsWin = new BrowserWindow({
     /*
-     * 宽度是为"不出现滚动条"服务的：设置项是"标题 + 说明"的长文本，
-     * 宽度不够时说明会折行，每折一行就多一行的高度。
-     * 高度则按实际渲染结果量出来（见下面的 did-finish-load），这里给的只是初值。
+     * 窗口宽度 = 左侧分类栏(136) + 间距 + 右侧设置栏，也就是"够放下标题 + 说明 + 控件"
+     * 的宽度；高度由页面量出来（见 openSettingsWindow 末尾的说明）。
      */
-    width: 900,
-    height: 620,
+    width: 720,
+    height: 520,
     show: false, // 等 ready-to-show（首帧就绪）再显示，避免先出现一块空白
     resizable: false,
     minimizable: false,
@@ -545,44 +544,11 @@ function openSettingsWindow() {
     log('[settings] shown (alwaysOnTop=' + settingsWin.isAlwaysOnTop() + ')');
   });
   /*
-   * 内容高度跟着实际渲染结果走（分类数量、字体、缩放都会变）。
-   *
-   * 为什么要反复量：设置项是 renderShellConfig() 里 await 一次 IPC 之后才插进 DOM 的，
-   * did-finish-load 时量到的是"还没渲染完"的高度，只量一次会得到一个偏矮的窗口。
-   * 所以量到连续两次相同（渲染稳定）为止。
-   *
-   * 上限用工作区高度而不是写死的 760：写死的话，多一组设置就会静默多出一条滚动条
-   * （不报错，只是最后一组被压到折叠线以下）。
+   * 高度不在这里写死：两栏布局下"最高的一屏"只有页面知道，
+   * 所以由页面量好经 `shell:settings-size` 报上来（见 registerIpc 里的处理）。
+   * 这里的初值取得比实际需要略大：报上来之前先按这个尺寸显示，
+   * 万一面上的脚本出错，也只是底部多留一点空白，不会把设置项裁掉。
    */
-  settingsWin.webContents.once('did-finish-load', async () => {
-    const cap = maxAuxContentHeight();
-    let previous = -1;
-    for (let i = 0; i < 12; i++) {
-      if (!settingsWin || settingsWin.isDestroyed()) return;
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      let needed;
-      try {
-        needed = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
-      } catch (error) {
-        log('[settings] auto-size failed', error.message);
-        return;
-      }
-      if (needed === previous) break;
-      previous = needed;
-      if (!needed) return;
-      const capped = Math.min(Math.max(needed + 2, 200), cap);
-      const [width, current] = settingsWin.getContentSize();
-      if (Math.abs(capped - current) > 2) {
-        settingsWin.setContentSize(width, capped);
-        const [, after] = settingsWin.getContentSize();
-        log('[settings] content sized to', needed, '->', after, capped < needed ? '(已到上限，将可滚动)' : '');
-      }
-      if (needed > cap) {
-        // 小屏幕上放不下就让它可以滚，别硬裁掉
-        await settingsWin.webContents.executeJavaScript("document.body.style.overflowY = 'auto'");
-      }
-    }
-  });
   settingsWin.on('closed', () => {
     settingsWin = null;
   });
@@ -699,8 +665,6 @@ function buildTrayTemplate() {
     { label: '打开数据目录', click: () => require('electron').shell.openPath(app.getPath('userData')) },
     { label: '打开日志', click: () => require('electron').shell.openPath(logFile()) },
     { label: '设置…', click: () => openSettingsWindow() },
-    { label: '称号…', click: () => openGrowthWindow('badges') },
-    { label: '成就…', click: () => openGrowthWindow('achievements') },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit(); } },
   ];
@@ -963,27 +927,45 @@ function runGrowthProbe() {
       }
 
       // ---- 5) 托盘入口 ----
+      // 称号/成就不再占用托盘：它们本质是"养成"的一部分，
+      // 入口统一收在气泡齿轮 →「日常养成」里（那个入口上面已经断言过）。
       const trayLabels = buildTrayTemplate().map((item) => item.label || `(${item.type})`);
       check(
-        '托盘含「称号…」「成就…」',
-        trayLabels.includes('称号…') && trayLabels.includes('成就…'),
+        '托盘不再含「称号…」「成就…」（改由气泡 →「日常养成」进入）',
+        !trayLabels.includes('称号…') && !trayLabels.includes('成就…'),
         JSON.stringify(trayLabels)
       );
-      const badgeItem = buildTrayTemplate().find((item) => item.label === '称号…');
-      if (badgeItem && growthWin && !growthWin.isDestroyed()) {
-        badgeItem.click();
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        const tabNow = await growthWin.webContents.executeJavaScript(
-          `(document.querySelector('#tabs button[aria-selected="true"]') || {}).dataset.tab`
+      check(
+        '托盘仍保留常用项与「设置…」',
+        ['显示桌宠', '总是置顶', '跟随 DSH 工作状态', '开机自启', '设置…', '退出'].every((label) =>
+          trayLabels.includes(label)
+        ),
+        JSON.stringify(trayLabels)
+      );
+      // 入口没了，窗口内必须还能到称号页 —— 否则功能等于被删掉
+      if (growthWin && !growthWin.isDestroyed()) {
+        const badgeTab = await growthWin.webContents.executeJavaScript(`(() => {
+          const btn = [...document.querySelectorAll('#tabs button')].find((b) => b.dataset.tab === 'badges');
+          btn.click();
+          return { on: btn.getAttribute('aria-selected'), cards: document.querySelectorAll('#panel .card').length };
+        })()`);
+        check(
+          '养成窗口内可切到称号页（称号/成就的入口）',
+          badgeTab.on === 'true' && badgeTab.cards > 0,
+          JSON.stringify(badgeTab)
         );
-        check('托盘「称号…」把窗口切到称号页', tabNow === 'badges', JSON.stringify({ tabNow }));
       } else {
-        check('托盘「称号…」把窗口切到称号页', false, '托盘项或窗口缺失');
+        check('养成窗口内可切到称号页（称号/成就的入口）', false, '养成窗口不存在');
       }
       // ---- 7) 天气端到端：从另一个窗口设城市 → 桌宠页面应主动预取 ----
       // 必须从**另一个窗口**写，才能触发同源 storage 事件（同文档写不触发）——
       // 这正是真实路径：城市是在设置窗口里改的。
+      //
+      // 注意：`setItem` 写入**相同的值不会触发 storage 事件**，所以第二次跑这条探针时
+      // 不能还写上次那个城市（曾经因此假失败：改动没发生 → 没事件 → 20 秒超时）。
+      // 所以先读原值，写一个**一定不同**的值，跑完再还原。
       const beforeCity = await win.webContents.executeJavaScript("localStorage.getItem('whale-moe:weatherCity')");
+      const probeCity = beforeCity === '北京' ? '上海' : '北京';
       const setter = new BrowserWindow({
         width: 400,
         height: 300,
@@ -991,7 +973,9 @@ function runGrowthProbe() {
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false },
       });
       await setter.loadURL(`${server.url}/pet/settings.html`);
-      await setter.webContents.executeJavaScript("localStorage.setItem('whale-moe:weatherCity', '上海')");
+      await setter.webContents.executeJavaScript(
+        `localStorage.setItem('whale-moe:weatherCity', ${JSON.stringify(probeCity)})`
+      );
       const weather = await win.webContents.executeJavaScript(`(async () => {
         const t0 = Date.now();
         while (Date.now() - t0 < 20000) {
@@ -1009,7 +993,11 @@ function runGrowthProbe() {
         await setter.webContents.executeJavaScript(`localStorage.setItem('whale-moe:weatherCity', ${JSON.stringify(beforeCity)})`);
       }
       setter.destroy();
-      check('天气端到端：另一个窗口改城市 → 桌宠主动预取真实天气', Boolean(weather), JSON.stringify(weather));
+      check(
+        `天气端到端：另一个窗口把城市改成「${probeCity}」→ 桌宠主动预取真实天气`,
+        Boolean(weather),
+        JSON.stringify(weather)
+      );
 
       // ---- 8) 余额端到端：契约 + 自定义地址是否真的能用 ----
       // 上游要的形状： { ok: true, balances: [ { currency, totalBalance } ] }，
@@ -1090,7 +1078,7 @@ function runGrowthProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 15;
+    const expected = 16;
     log(
       '[growth-probe]',
       results.length !== expected
@@ -1297,6 +1285,54 @@ function runSettingsProbe() {
           structure.sections.length === 6 && structure.sections.includes('天气与余额') && structure.sections.includes('花费播报'),
           JSON.stringify(structure.sections)
         );
+
+        // 二级菜单：左侧一级分类由 section 生成，右侧一次只显示一屏
+        const nav = await settingsWin.webContents.executeJavaScript(`(() => {
+          const rail = document.getElementById('rail');
+          const buttons = [...rail.querySelectorAll('button')];
+          const visible = [...document.querySelectorAll('section[data-panel]')].filter((s) => !s.hidden);
+          return {
+            labels: buttons.map((b) => b.textContent.trim()),
+            selected: buttons.filter((b) => b.getAttribute('aria-selected') === 'true').length,
+            visiblePanels: visible.map((s) => s.dataset.panel),
+            headings: [...document.querySelectorAll('section[data-panel] h2')].map((h) => h.textContent.trim()),
+          };
+        })()`);
+        check(
+          '左侧分类栏与右侧各屏一一对应（导航是生成的，不会漂移）',
+          nav.labels.length === 6 &&
+            nav.labels.join(',') === nav.headings.join(',') &&
+            nav.selected === 1 &&
+            nav.visiblePanels.length === 1,
+          JSON.stringify(nav)
+        );
+
+        // 点另一项 → 右侧真的换屏（这是"二级菜单"的核心行为）
+        const switched = await settingsWin.webContents.executeJavaScript(`(() => {
+          const buttons = [...document.getElementById('rail').querySelectorAll('button')];
+          const target = buttons.find((b) => b.textContent.trim() === '天气与余额');
+          target.click();
+          const visible = [...document.querySelectorAll('section[data-panel]')].filter((s) => !s.hidden);
+          const rows = visible.length === 1 ? visible[0].querySelectorAll('.row').length : 0;
+          return {
+            visiblePanels: visible.map((s) => s.dataset.panel),
+            rows,
+            selected: buttons.filter((b) => b.getAttribute('aria-selected') === 'true').map((b) => b.textContent.trim()),
+          };
+        })()`);
+        check(
+          '点左侧「天气与余额」→ 右侧只显示这一屏且内容非空',
+          switched.visiblePanels.join(',') === 'env' && switched.rows > 0 && switched.selected.join(',') === '天气与余额',
+          JSON.stringify(switched)
+        );
+        /*
+         * 收拾干净：上面那一点会把"上次看的分类"记进 localStorage（真实使用时是有用的），
+         * 但探针不该给用户留下界面状态 —— 否则他打开设置窗口会莫名停在探针点过的那一屏。
+         */
+        await settingsWin.webContents.executeJavaScript(
+          "localStorage.removeItem('whale-moe:settingsTab')"
+        );
+
         const expectedRows = [
           '看板娘', '台词气泡', '粒子效果',
           '总是置顶', '跟随 DSH 工作状态', '开机自启',
@@ -1312,15 +1348,22 @@ function runSettingsProbe() {
         const sayType = await win.webContents.executeJavaScript('typeof window.__dshWhaleMoeSay');
         check('桌宠页面暴露说话钩子 __dshWhaleMoeSay', sayType === 'function', sayType);
 
+        /*
+         * 高度：页面把"最高的一屏"量成 naturalHeight 报给主进程，主进程据此定窗口尺寸。
+         * 断言 naturalHeight ≤ 窗口内容高度 —— 也就是说**不需要滚动条**就能看全，
+         * 而不是"能用滚动条凑合"（那是兜底，不是通过标准）。
+         */
         const [cw, ch] = settingsWin.getContentSize();
-        const scrollH = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
+        const natural = await settingsWin.webContents.executeJavaScript(
+          'Number(document.body.dataset.naturalHeight) || 0'
+        );
         const scrollable = await settingsWin.webContents.executeJavaScript(
           "getComputedStyle(document.body).overflowY === 'auto'"
         );
         check(
-          '窗口高度容得下全部内容（放不下时必须可滚动，不能裁掉）',
-          scrollH <= ch || scrollable === true,
-          `content=${cw}x${ch} scrollHeight=${scrollH} scrollable=${scrollable}`
+          '窗口高度容得下最高的一屏（放不下时才有滚动条兜底）',
+          natural > 0 && natural <= ch,
+          `content=${cw}x${ch} natural=${natural} scrollable=${scrollable}`
         );
         log('[settings-probe] disable-features =', app.commandLine.getSwitchValue('disable-features'));
         const image = await captureImage(settingsWin.webContents);
@@ -1431,7 +1474,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 14;
+    const expected = 16;
     log(
       '[settings-probe]',
       results.length !== expected
@@ -1604,6 +1647,31 @@ function registerIpc() {
     node: process.versions.node,
     isPackaged: app.isPackaged,
   }));
+  /*
+   * 设置窗口的高度由**页面**量好报上来（见 settings.js 的 naturalHeight），
+   * 这里只负责夹取与套用。
+   *
+   * 为什么量高度的活交给页面：两栏布局下"最高的一屏"只有页面知道，
+   * 主进程读不到渲染进程的布局；而且它要用到"切换分类后重新量"的能力。
+   */
+  ipcMain.on('shell:settings-size', (event, height) => {
+    if (!settingsWin || settingsWin.isDestroyed()) return;
+    // 只认设置窗口自己报的高度：同源的桌宠页面也能 invoke 这个通道
+    if (event.sender !== settingsWin.webContents) return;
+    const needed = Number(height);
+    if (!Number.isFinite(needed) || needed <= 0) return;
+    /*
+     * +4 是给"最后一行的 margin"留的余量：offsetHeight 不含子元素的下外边距，
+     * 页面量出来的值会比真实内容少几像素 —— 少这几像素就会平白多出一条滚动条。
+     */
+    const target = Math.min(Math.max(Math.round(needed) + 4, 220), maxAuxContentHeight());
+    const [width, current] = settingsWin.getContentSize();
+    if (Math.abs(target - current) > 2) {
+      settingsWin.setContentSize(width, target);
+      const [, after] = settingsWin.getContentSize();
+      log('[settings] content sized to', needed, '->', after, target < needed ? '(已到上限，将可滚动)' : '');
+    }
+  });
   ipcMain.on('shell:reload', () => win && win.webContents.reload());
   ipcMain.on('shell:reset-position', () => resetPosition());
   ipcMain.on('shell:open-path', (_event, which) => {

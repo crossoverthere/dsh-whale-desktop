@@ -58,6 +58,58 @@
     return button;
   }
 
+  // ---------------------------------------------------------------- 0. 二级菜单
+  /*
+   * 左侧一级分类、右侧对应设置。
+   *
+   * 为什么做成两栏而不是长列表：设置项已经二十多个，全铺在一屏里既长又难找；
+   * 分成一屏一屏之后，窗口还能矮一大截（最高的一屏决定窗口高度）。
+   *
+   * 左侧导航**由 section 生成**，不写死在 HTML 里：
+   * 否则"加了一屏忘了加导航"或者"改了 h2 忘了改导航文案"这类漂移迟早发生。
+   */
+  const panels = [...document.querySelectorAll('section[data-panel]')];
+  const rail = document.getElementById('rail');
+  const railButtons = new Map();
+  /** 记住上次看的分类：设置窗口是反复开的，每次都跳回第一项很烦。 */
+  const TAB_KEY = 'whale-moe:settingsTab';
+  let activeName = '';
+
+  function activate(name, remember = true) {
+    activeName = name;
+    for (const panel of panels) {
+      panel.hidden = panel.dataset.panel !== name;
+    }
+    for (const [key, button] of railButtons) {
+      button.setAttribute('aria-selected', key === name ? 'true' : 'false');
+    }
+    if (remember) {
+      try {
+        localStorage.setItem(TAB_KEY, name);
+      } catch (error) {
+        /* 存储不可用不影响使用 */
+      }
+    }
+  }
+
+  for (const panel of panels) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    const heading = panel.querySelector('h2');
+    button.textContent = (heading ? heading.textContent : panel.dataset.panel).trim();
+    button.addEventListener('click', () => activate(panel.dataset.panel));
+    rail.append(button);
+    railButtons.set(panel.dataset.panel, button);
+  }
+
+  let preferredTab = '';
+  try {
+    preferredTab = localStorage.getItem(TAB_KEY) || '';
+  } catch (error) {
+    preferredTab = '';
+  }
+  activate(railButtons.has(preferredTab) ? preferredTab : panels[0].dataset.panel, false);
+
   // ---------------------------------------------------------------- 1. 桌宠偏好（localStorage）
   const PET_PREFS = [
     { key: 'pet', label: '看板娘', hint: '关掉后她离开桌面；本窗口仍可把她打开' },
@@ -329,7 +381,55 @@
     );
   }
 
-  renderShellConfig();
+  // ---------------------------------------------------------------- 5. 窗口高度
+  /**
+   * 量出"内容自然高度"报给主进程，由它定窗口尺寸。
+   *
+   * 为什么不直接读 `document.body.scrollHeight`：它的**下限是可视高度**，
+   * 窗口偏高时量到的就是窗口高度本身，于是永远缩不回去（第一版就踩了这个坑：
+   * 量一次得到 581，设成 778 之后再量还是 778）。
+   * 所以按"外层留白 + 标题 + **最高的一屏** + 底栏"逐项相加 —— 注意 CSS 里
+   * .shell / .pane / .rail 都刻意没有纵向 margin，否则这里要跟着改。
+   *
+   * 取最高的一屏（而不是当前这一屏）是为了让窗口**高度固定**：
+   * 切分类时窗口忽高忽低很晃眼。
+   */
+  function naturalHeight() {
+    const previous = activeName;
+    let tallest = 0;
+    for (const panel of panels) {
+      activate(panel.dataset.panel, false);
+      tallest = Math.max(tallest, panel.offsetHeight);
+    }
+    activate(previous, false);
+
+    const bodyStyle = getComputedStyle(document.body);
+    const h1 = document.querySelector('h1');
+    const h1Style = getComputedStyle(h1);
+    const foot = document.querySelector('.foot');
+    const footStyle = getComputedStyle(foot);
+    return Math.ceil(
+      (parseFloat(bodyStyle.paddingTop) || 0) +
+        (parseFloat(bodyStyle.paddingBottom) || 0) +
+        h1.offsetHeight +
+        (parseFloat(h1Style.marginBottom) || 0) +
+        tallest +
+        (parseFloat(footStyle.marginTop) || 0) +
+        foot.offsetHeight
+    );
+  }
+
+  function reportHeight() {
+    // 暴露给自检探针（主进程读不到渲染进程的布局，只能由页面把结果带出来）
+    const needed = naturalHeight();
+    document.body.dataset.naturalHeight = String(needed);
+    if (typeof api.setContentHeight === 'function') {
+      api.setContentHeight(needed);
+    }
+  }
+
+  // 等各分组渲染完再量（renderShellConfig 内部 await 过一次 IPC）
+  Promise.resolve(renderShellConfig()).then(reportHeight, reportHeight);
 
   // 版本信息
   if (typeof api.appInfo === 'function') {
