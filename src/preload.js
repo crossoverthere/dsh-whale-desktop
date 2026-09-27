@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('whaleShell', {
   getConfig: () => ipcRenderer.invoke('shell:get-config'),
   setConfig: (patch) => ipcRenderer.invoke('shell:set-config', patch),
   reload: () => ipcRenderer.send('shell:reload'),
+  /** 打开独立的设置窗口（由主进程创建 BrowserWindow）。 */
+  openSettings: () => ipcRenderer.send('shell:open-settings'),
   quit: () => ipcRenderer.send('shell:quit'),
   /** 渲染进程日志/报错回传，方便无界面时排查。 */
   log: (level, message) => ipcRenderer.send('shell:log', { level, message }),

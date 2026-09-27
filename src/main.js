@@ -35,12 +35,13 @@ const argValue = (name) => {
 const SHOT_MODE = argValue('shot') !== undefined;
 const MENU_PROBE = argValue('menu-probe') !== undefined;
 const DSH_PROBE = argValue('dsh-probe') !== undefined;
+const SETTINGS_PROBE = argValue('settings-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
-const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE;
+const PROBE_MODE = SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE;
 
 let win = null;
 let tray = null;
@@ -205,7 +206,8 @@ function createWindow() {
     log('[window] loaded', server.url, 'bounds', JSON.stringify(win.getBounds()));
     startCursorPolling();
     if (!DSH_PROBE) pushDshState();
-    if (DSH_PROBE) runDshProbe();
+    if (SETTINGS_PROBE) runSettingsProbe();
+    else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
     else if (SHOT_MODE) scheduleShot();
   });
@@ -279,6 +281,62 @@ function pushDshState() {
     : dshWatcher.snapshot();
   lastDshState = snapshot;
   win.webContents.send('shell:dsh-state', snapshot);
+}
+
+// ---------------------------------------------------------------- 独立设置窗口
+let settingsWin = null;
+
+/**
+ * 「打开看板娘设置」开的独立窗口。
+ *
+ * 为什么不做成页面内浮层：浮层要靠齿轮 ⚙ 开关，而齿轮在台词气泡里、
+ * 气泡 4.5 秒就自动隐藏 —— 于是面板一打开就没有可点的关闭入口。
+ * 独立窗口有原生标题栏（还有窗口内的"关闭"按钮），并且用的是同一个源，
+ * 与桌宠页面共享 localStorage，改完立即生效。
+ */
+function openSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.show();
+    settingsWin.focus();
+    return settingsWin;
+  }
+  settingsWin = new BrowserWindow({
+    width: 360,
+    height: 268,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    title: '看板娘设置',
+    backgroundColor: '#fafafa',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      devTools: Boolean(argValue('dev')),
+    },
+  });
+  settingsWin.setMenuBarVisibility(false);
+  settingsWin.loadURL(`${server.url}/pet/settings.html`);
+  // 内容高度随字体/缩放而变，按实际渲染高度自适应，免得第三项被截断
+  settingsWin.webContents.once('did-finish-load', async () => {
+    try {
+      const needed = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
+      if (needed > 0) {
+        const [width] = settingsWin.getContentSize();
+        settingsWin.setContentSize(width, Math.min(Math.max(needed, 180), 720));
+        log('[settings] content sized to', needed);
+      }
+    } catch (error) {
+      log('[settings] auto-size failed', error.message);
+    }
+  });
+  settingsWin.on('closed', () => {
+    settingsWin = null;
+  });
+  log('[settings] window opened');
+  return settingsWin;
 }
 
 function setVisible(next) {
@@ -452,6 +510,135 @@ function runDshProbe() {
   }, 3500);
 }
 
+// ---------------------------------------------------------------- 自检小工具
+/**
+ * 截图带重试：窗口刚 setContentSize / 刚显示时，合成器可能还没出新帧，
+ * capturePage 会抛 UnknownVizError。重试几次即可，别让截图失败中断整条断言链。
+ */
+async function captureTo(webContents, target) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const image = await webContents.capturePage();
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, image.toPNG());
+      return true;
+    } catch (error) {
+      log('[probe] capture attempt', attempt, 'failed:', error.message);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- 设置窗口探针
+/**
+ * 验证三件事：
+ *   1) 右键菜单点「打开看板娘设置」真的弹出独立窗口，且里面有 3 个开关
+ *   2) 在窗口里关掉「台词气泡」→ 桌宠页面同源 localStorage 立刻读到 "0"
+ *   3) 页面内偏好面板补上的关闭按钮确实能关掉它
+ */
+function runSettingsProbe() {
+  const target = typeof argValue('settings-probe') === 'string'
+    ? argValue('settings-probe')
+    : path.join(ROOT, 'tmp', 'settings-probe.png');
+
+  setTimeout(async () => {
+    const results = [];
+    const check = (name, ok, detail) => {
+      results.push({ name, ok });
+      log('[settings-probe]', ok ? 'PASS' : 'FAIL', name, detail ? '-> ' + detail : '');
+    };
+
+    try {
+      // 1) 从右键菜单点那一项
+      const opened = await win.webContents.executeJavaScript(`(() => {
+        const frame = document.querySelector('[data-dsh-whale-frame]');
+        if (!frame) return { error: 'no whale frame' };
+        frame.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 600, clientY: 400 }));
+        const menu = document.querySelector('[data-dsh-whale-context]');
+        if (!menu) return { error: 'menu not opened' };
+        const btn = [...menu.querySelectorAll('button')].find((n) => (n.textContent || '').trim() === '打开看板娘设置');
+        if (!btn) return { error: 'item not found' };
+        btn.click();
+        return { clicked: true };
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+
+      const winInfo = settingsWin && !settingsWin.isDestroyed()
+        ? { exists: true, visible: settingsWin.isVisible(), title: settingsWin.getTitle() }
+        : { exists: false };
+      check('菜单项弹出独立设置窗口', Boolean(winInfo.exists && winInfo.visible), JSON.stringify({ opened, winInfo }));
+
+      if (winInfo.exists) {
+        const toggles = await settingsWin.webContents.executeJavaScript(
+          `[...document.querySelectorAll('#list .row')].map((r) => ({
+             key: (r.querySelector('.name') || {}).textContent,
+             checked: r.querySelector('input').checked,
+           }))`
+        );
+        check('设置窗口含 3 个开关', toggles.length === 3, JSON.stringify(toggles));
+        const [cw, ch] = settingsWin.getContentSize();
+        const scrollH = await settingsWin.webContents.executeJavaScript('Math.ceil(document.body.scrollHeight)');
+        check('窗口高度容得下全部内容（无滚动条）', scrollH <= ch, `content=${cw}x${ch} scrollHeight=${scrollH}`);
+        const shot = await captureTo(settingsWin.webContents, target);
+        log('[settings-probe]', shot ? 'screenshot ' + target : 'screenshot FAILED');
+
+        // 2) 在设置窗口里关掉「台词气泡」
+        await settingsWin.webContents.executeJavaScript(`(() => {
+          const row = [...document.querySelectorAll('#list .row')].find((r) => (r.querySelector('.name') || {}).textContent === '台词气泡');
+          const input = row.querySelector('input');
+          input.checked = false;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const seen = await win.webContents.executeJavaScript(
+          `({ chat: localStorage.getItem('whale-moe:chat'), whaleAlive: Boolean(document.querySelector('[data-dsh-whale-root]')) })`
+        );
+        check('设置写入被桌宠页面读到（同源 localStorage）', seen.chat === '0' && seen.whaleAlive, JSON.stringify(seen));
+
+        // 还原
+        await settingsWin.webContents.executeJavaScript(`(() => {
+          const row = [...document.querySelectorAll('#list .row')].find((r) => (r.querySelector('.name') || {}).textContent === '台词气泡');
+          const input = row.querySelector('input');
+          input.checked = true;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`);
+      }
+
+      // 3) 页面内偏好面板的关闭按钮
+      const panel = await win.webContents.executeJavaScript(`(() => {
+        const gear = document.querySelector('[data-dsh-whale-gear]') || document.querySelector('[data-dsh-whale-gear-mini]');
+        if (!gear) return { error: 'no gear button' };
+        gear.click();
+        const p = document.querySelector('[data-dsh-whale-prefs]');
+        if (!p) return { error: 'no prefs panel' };
+        const openedNow = !p.hidden;
+        const close = p.querySelector('[data-dsh-whale-prefs-close]');
+        if (!close) return { error: 'no injected close button', openedNow };
+        close.click();
+        return { openedNow, closed: p.hidden };
+      })()`);
+      check('页面内偏好面板可关闭（注入的 × 按钮）', Boolean(panel && panel.openedNow && panel.closed), JSON.stringify(panel));
+    } catch (error) {
+      log('[settings-probe] failed', error.message);
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    const expected = 5;
+    log(
+      '[settings-probe]',
+      results.length < expected
+        ? `DONE 只跑到 ${results.length}/${expected} 项（中途出错），失败 ${failed} 项`
+        : failed === 0
+          ? `DONE 全部 ${expected} 项通过`
+          : `DONE ${failed}/${expected} 项未通过`
+    );
+    app.exit(failed === 0 && results.length === expected ? 0 : 1);
+  }, 3500);
+}
+
 // ---------------------------------------------------------------- 右键菜单越界探针
 /**
  * 在屏幕右下角模拟一次右键，量出菜单是否溢出视口。
@@ -506,9 +693,9 @@ function runMenuProbe() {
       log('[menu-probe]', ok ? 'PASS 菜单完全在屏幕内' : 'FAIL 菜单溢出视口');
       log('[menu-probe] screenshot', target);
 
-      // ---- 第二阶段：点「打开看板娘设置」应当打开桌宠自带的偏好面板 ----
-      // 上游那一项是找 DSH 页面的设置入口，桌面模式下必然找不到；
-      // 壳层应接管并打开 [data-dsh-whale-prefs]。
+      // ---- 第二阶段：点「打开看板娘设置」应当弹出**独立设置窗口** ----
+      // （上游那一项是找 DSH 页面的设置入口，桌面模式下必然找不到，
+      //   壳层接管后改为开窗口；页面内那个浮层留给齿轮 ⚙，另外补了关闭按钮。）
       const clicked = await win.webContents.executeJavaScript(`(() => {
         const menu = document.querySelector('[data-dsh-whale-context]');
         if (!menu) return { error: 'context menu gone' };
@@ -519,31 +706,20 @@ function runMenuProbe() {
         btn.click();
         return { clicked: true, menuGone: !document.querySelector('[data-dsh-whale-context]') };
       })()`);
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      const prefs = await win.webContents.executeJavaScript(`(() => {
-        const panel = document.querySelector('[data-dsh-whale-prefs]');
-        if (!panel) return { found: false };
-        const r = panel.getBoundingClientRect();
-        const style = getComputedStyle(panel);
-        return {
-          found: true,
-          hidden: panel.hidden,
-          display: style.display,
-          width: Math.round(r.width),
-          height: Math.round(r.height),
-          visible: !panel.hidden && style.display !== 'none' && r.width > 1 && r.height > 1,
-        };
-      })()`);
+      const asWin = settingsWin && !settingsWin.isDestroyed()
+        ? { exists: true, visible: settingsWin.isVisible(), title: settingsWin.getTitle() }
+        : { exists: false };
       const target2 = typeof argValue('menu-probe') === 'string'
         ? argValue('menu-probe').replace(/\.png$/i, '-settings.png')
         : path.join(ROOT, 'tmp', 'menu-probe-settings.png');
-      fs.writeFileSync(target2, (await win.webContents.capturePage()).toPNG());
+      if (asWin.exists) await captureTo(settingsWin.webContents, target2);
       log('[menu-probe] click', JSON.stringify(clicked));
-      log('[menu-probe] prefs', JSON.stringify(prefs));
-      log('[menu-probe]', clicked && clicked.clicked && prefs && prefs.visible
-        ? 'PASS 「打开看板娘设置」已打开桌宠偏好面板'
-        : 'FAIL 「打开看板娘设置」没有打开偏好面板');
+      log('[menu-probe] settingsWindow', JSON.stringify(asWin));
+      log('[menu-probe]', clicked && clicked.clicked && asWin.exists && asWin.visible
+        ? 'PASS 「打开看板娘设置」已弹出独立设置窗口'
+        : 'FAIL 「打开看板娘设置」没有弹出设置窗口');
       log('[menu-probe] screenshot2', target2);
     } catch (error) {
       log('[menu-probe] failed', error.message);
@@ -635,6 +811,7 @@ function registerIpc() {
     return { ...config };
   });
   ipcMain.on('shell:reload', () => win && win.webContents.reload());
+  ipcMain.on('shell:open-settings', () => openSettingsWindow());
   ipcMain.on('shell:quit', () => {
     isQuitting = true;
     app.quit();
@@ -716,6 +893,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
   app.on('will-quit', async () => {
     globalShortcut.unregisterAll();
     stopDshWatcher();
+    if (settingsWin && !settingsWin.isDestroyed()) settingsWin.destroy();
     if (server) await server.close();
   });
 }

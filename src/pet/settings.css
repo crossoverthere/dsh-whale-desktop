@@ -1,0 +1,128 @@
+/* 独立设置窗口的样式。
+   刻意不依赖上游 CSS：这个窗口不是"页面内浮层"，而是一个正常的应用窗口。 */
+
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  padding: 14px 16px 12px;
+  font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  color: #1a1a1a;
+  background: #fafafa;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #eaeaea;
+    background: #1f1f1f;
+  }
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  opacity: 0.72;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  padding: 9px 11px;
+  background: #fff;
+  border: 1px solid rgb(0 0 0 / 10%);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  .row {
+    background: #2a2a2a;
+    border-color: rgb(255 255 255 / 12%);
+  }
+}
+
+.text {
+  min-width: 0;
+}
+
+.name {
+  font-size: 13px;
+}
+
+.hint {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+input[type="checkbox"] {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 19px;
+  margin: 0;
+  appearance: none;
+  background: #c9c9c9;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.15s;
+}
+
+input[type="checkbox"]:checked {
+  background: #4aa8ff;
+}
+
+input[type="checkbox"]:checked::after {
+  transform: translateX(15px);
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.foot button {
+  padding: 4px 12px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid rgb(128 128 128 / 45%);
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: 1;
+}

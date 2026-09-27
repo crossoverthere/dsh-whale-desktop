@@ -2,6 +2,38 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-09-27
+
+### 新增
+
+- **独立的设置窗口。** 右键 →「打开看板娘设置」现在弹出一个真正的应用窗口
+  （`src/pet/settings.html` + `settings.js` + `settings.css`），当前提供三个开关：
+  看板娘 / 台词气泡 / 粒子效果。
+
+  它和桌宠页面**同源**（都由 `http://127.0.0.1:<port>` 提供），所以直接共用同一份
+  `localStorage`（`whale-moe:*`）—— 页面侧监听 `storage` 事件，再派发上游认识的
+  `whale-moe-prefs-change` 让它重新 reconcile，**不需要任何额外 IPC 同步偏好**。
+
+  窗口高度在 `did-finish-load` 后按 `document.body.scrollHeight` 自适应，
+  免得不同字体/显示缩放下第三个开关被截断。
+
+- **页面内偏好面板终于关得掉了。** 上游那个浮层只能靠齿轮 ⚙ 开合，而齿轮在台词气泡里、
+  气泡 4.5 秒后自动隐藏（`bubbleHideAt`），于是面板一旦打开就**没有可点的关闭入口**。
+  壳层补了三条退路：
+  1. 注入一个 × 按钮（必须用内联样式，上游给 `[data-dsh-whale-prefs] button`
+     定了 flex 行样式，会把它撑成一条开关）
+  2. 点击面板外关闭 —— 上游给 rootNode 挂了 `stopPropagation`，
+     所以"能冒泡到 document 的点击"天然就等于"点在桌宠之外"
+  3. Esc 关闭
+
+### 变更
+
+- `npm run menu:probe` 第二阶段断言从"打开页面内面板"改为"弹出独立设置窗口"
+- 新增 `npm run settings:probe`：5 项断言（窗口弹出 / 含三个开关 / 高度容得下内容 /
+  设置写入被桌宠页面读到 / 页面内面板可关闭），并带截图重试
+- 截图助手 `captureTo()`：窗口刚 `setContentSize` 时合成器还没出新帧，
+  `capturePage()` 会抛 `UnknownVizError`，现在自动重试，不再中断整条断言链
+
 ## [0.2.1] - 2026-09-27
 
 ### 修复

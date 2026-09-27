@@ -167,9 +167,21 @@
   // → `[data-slot="settings.trigger"]` → 文本"设置"兜底），独立桌面版没有 DSH 页面，
   // 点了自然毫无反应。
   //
-  // 修在壳层：页面上确实没有 DSH 入口时，改为打开桌宠**自带的偏好面板**
-  // （就是齿轮 ⚙ 那个，等价物），vendor/whale 依旧不改。
+  // 修在壳层：页面上确实没有 DSH 入口时，改为打开**独立的设置窗口**
+  // （主进程创建的 BrowserWindow，与页面同源、共享 localStorage）。
+  // vendor/whale 依旧不改。
   const SETTINGS_ITEM_LABEL = '打开看板娘设置';
+
+  /** 没有壳 API 时的退路：直接打开页面内那个偏好面板。 */
+  function openPetPrefs() {
+    const prefs = document.querySelector('[data-dsh-whale-prefs]');
+    if (!prefs) {
+      api.log('error', 'openPetPrefs: 找不到 [data-dsh-whale-prefs]');
+      return false;
+    }
+    prefs.hidden = false;
+    return true;
+  }
 
   /** 页面里到底有没有 DSH 的设置入口（有就让上游自己处理，别抢）。 */
   function hasDshSettingsEntry() {
@@ -183,18 +195,6 @@
     return Array.from(document.querySelectorAll('button')).some(
       (node) => (node.textContent || '').trim() === '设置'
     );
-  }
-
-  /** 打开桌宠自带的偏好面板（等价于点齿轮 ⚙）。 */
-  function openPetPrefs() {
-    const prefs = document.querySelector('[data-dsh-whale-prefs]');
-    if (!prefs) {
-      api.log('error', 'openPetPrefs: 找不到 [data-dsh-whale-prefs]');
-      return false;
-    }
-    prefs.hidden = false;
-    api.log('info', '已用桌宠自带偏好面板替代「打开看板娘设置」');
-    return true;
   }
 
   // 用捕获阶段：此时右键菜单还挂在 DOM 上，判定最可靠。
@@ -215,10 +215,116 @@
       if (hasDshSettingsEntry()) {
         return; // 有 DSH 入口，上游自己能处理
       }
-      window.setTimeout(openPetPrefs, 0);
+      window.setTimeout(() => {
+        if (typeof api.openSettings === 'function') {
+          api.openSettings();
+          api.log('info', '已打开独立设置窗口');
+        } else {
+          openPetPrefs(); // 没有壳 API 时退回页面内面板
+        }
+      }, 0);
     },
     true
   );
+
+  // ---------- 页面内偏好面板：补一个能关掉它的入口 ----------
+  // 上游面板只能靠齿轮 ⚙ 开合，而齿轮在台词气泡里、气泡 4.5 秒后自动隐藏，
+  // 于是面板一打开就没有可点的关闭入口 —— 这是上游在独立宿主下的设计缺口。
+  // 壳层给它注入一个 × 按钮，并补上「点外面关闭 / Esc 关闭」。
+  let panelCloseTarget = null;
+
+  function ensurePanelClose() {
+    // 桌宠 DOM 变动很频繁，这里先做最便宜的短路
+    if (panelCloseTarget && panelCloseTarget.isConnected) {
+      return;
+    }
+    const panel = document.querySelector('[data-dsh-whale-prefs]');
+    if (!panel) {
+      return;
+    }
+    // 上游给 [data-dsh-whale-prefs] button 定了 flex 行样式，
+    // 所以这里必须用内联样式（内联优先于样式表）把它压成一个小圆钮。
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('data-dsh-whale-prefs-close', 'true');
+    button.title = '关闭设置';
+    button.setAttribute('aria-label', '关闭设置');
+    button.textContent = '×';
+    button.style.cssText = [
+      'position:absolute',
+      'top:4px',
+      'right:6px',
+      'display:block',
+      'width:18px',
+      'height:18px',
+      'padding:0',
+      'margin:0',
+      'line-height:16px',
+      'font-size:14px',
+      'text-align:center',
+      'color:inherit',
+      'background:transparent',
+      'border:0',
+      'border-radius:6px',
+      'box-shadow:none',
+      'cursor:pointer',
+      'opacity:0.6',
+    ].join(';');
+    button.addEventListener('mouseenter', () => {
+      button.style.opacity = '1';
+    });
+    button.addEventListener('mouseleave', () => {
+      button.style.opacity = '0.6';
+    });
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      panel.hidden = true;
+    });
+    if (getComputedStyle(panel).position === 'static') {
+      panel.style.position = 'relative';
+    }
+    // 给 × 让出位置，免得压住第一个开关
+    panel.style.paddingTop = '20px';
+    panel.appendChild(button);
+    panelCloseTarget = panel;
+    api.log('info', '已给页面内偏好面板注入关闭按钮');
+  }
+  // 桌宠根节点是后挂到 body 的，出现后再注入
+  ensurePanelClose();
+  new MutationObserver(() => ensurePanelClose()).observe(document.body, { childList: true, subtree: true });
+
+  // 点面板外面关闭：上游给 rootNode 挂了 stopPropagation，
+  // 所以"能冒泡到 document 的点击"天然就是"点在桌宠之外"。
+  document.addEventListener('click', () => {
+    const panel = document.querySelector('[data-dsh-whale-prefs]');
+    if (panel && !panel.hidden) {
+      panel.hidden = true;
+    }
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') {
+      return;
+    }
+    const panel = document.querySelector('[data-dsh-whale-prefs]');
+    if (panel && !panel.hidden) {
+      panel.hidden = true;
+    }
+  });
+
+  // ---------- 独立设置窗口改了偏好后，让上游重新读一遍 ----------
+  // 两个窗口同源，所以走 storage 事件就够了，不需要额外 IPC。
+  window.addEventListener('storage', (event) => {
+    const key = event.key || '';
+    if (!key.startsWith('whale-moe:')) {
+      return;
+    }
+    window.dispatchEvent(
+      new CustomEvent('whale-moe-prefs-change', {
+        detail: { key: key.slice('whale-moe:'.length), value: event.newValue },
+      })
+    );
+  });
 
   // ---------- DSH 工作状态 → 上游信号合成 ----------
   // 上游判断"在忙"靠的是页面里存在这些 DOM 信号（只看存在性，不读业务文本）：

@@ -156,6 +156,42 @@ if (btn) btn.click();
 我们只是在它之后再打开桌宠自带的偏好面板 `[data-dsh-whale-prefs]`（等价于点击齿轮 ⚙）。
 真有 DSH 入口时（例如将来把它嵌回 DSH 页面）则不抢，行为回到上游原样。
 
+### 4.7 独立设置窗口 & 页面内面板的关闭入口
+
+**为什么设置要做成独立窗口**：上游的偏好面板是页面内浮层，只能靠齿轮 ⚙ 开合，
+而齿轮在台词气泡里、气泡 4.5 秒后自动隐藏（`bubbleHideAt`）——
+面板一旦打开就**没有可点的关闭入口**。独立窗口有原生标题栏，这个问题自然消失，
+而且"看板娘开关关掉后还能把她打开"（页面内面板做不到这点）。
+
+窗口实现在 `src/main.js` 的 `openSettingsWindow()`，页面是 `src/pet/settings*.{html,css,js}`。
+
+**偏好如何跨窗口同步**：不写 IPC，靠**同源 localStorage**。
+
+```
+设置窗口  localStorage.setItem('whale-moe:chat','0')
+   ↓ 同源 → 另一个文档收到 storage 事件
+桌宠页面  window.addEventListener('storage', …)
+   ↓ 派发上游本来就监听的事件
+上游      root.addEventListener('whale-moe-prefs-change', schedule) → reconcile
+```
+
+所以 `shell.js` 里那条 `storage` 监听是这套机制的**关键一环**，
+`onWhaleShellApi.openSettings` 只负责开窗。
+
+**窗口高度**：三个开关 + 页脚的高度随字体/显示缩放而变，写死高度会截断第三项。
+`did-finish-load` 后读 `document.body.scrollHeight` 再 `setContentSize()`。
+
+**页面内面板仍然保留**（齿轮 ⚙ 还能打开它），所以壳层给它补了三条关闭退路：
+
+1. 注入 × 按钮 —— 必须用**内联样式**：上游有 `[data-dsh-whale-prefs] button { display:flex; … }`
+   这条规则，普通按钮会被撑成一行开关。
+2. 点面板外关闭 —— 上游在 `rootNode` 上挂了 `stopPropagation`，
+   于是"能冒泡到 `document` 的点击"天然就是"点在桌宠之外"，不需要额外判定。
+3. Esc 关闭。
+
+注入时机用 `MutationObserver` 盯 `document.body`，并用 `panelCloseTarget.isConnected`
+做短路（桌宠 DOM 变动很频繁，不能让每次 mutation 都跑选择器）。
+
 ## 5. DSH 工作状态联动
 
 上游会在"思考中/工作中/完成/出错"时切换立绘与状态签，判断依据是页面里的
