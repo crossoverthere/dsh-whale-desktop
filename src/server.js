@@ -55,18 +55,38 @@ function sendFile(res, file) {
 }
 
 /**
- * 给上游桌宠脚本打**一行**运行时补丁，对外暴露"显示任意台词"的入口。
+ * 给上游桌宠脚本打**一段**运行时补丁，对外暴露"让她说指定台词"的入口。
  *
- * 上游没有对外暴露说话钩子（内部只有 `showLineNow(line)`），而"本次任务花费"这类
- * 动态台词必须能主动让她开口。做法与上游自己的 DSH 插件一致：取文本 → 字符串替换 →
- * 再交给浏览器 —— **磁盘上的 vendor/whale 一个字都不改**，所以 `npm run sync:upstream`
- * 不会把补丁冲掉。
+ * 上游没有对外暴露说话钩子（内部只有 `showLineNow(line)`），而"本次任务花费"、
+ * "余额查询"这类动态台词必须能主动让她开口。做法与上游自己的 DSH 插件一致：
+ * 取文本 → 字符串替换 → 再交给浏览器 —— **磁盘上的 vendor/whale 一个字都不改**，
+ * 所以 `npm run sync:upstream` 不会把补丁冲掉。
+ *
+ * 补丁做两件事：
+ *   1. `__dshWhaleMoeSay(line, holdMs)` —— 说话；
+ *   2. **打完字之后**才开始算停留时间。上游是"开始说话时"就设 4.5 秒的到期时间，
+ *      而台词是逐字打的（标点 260ms、每 5 字 130ms、其余 64ms），
+ *      像余额播报那样四十多字的句子光打字就要 4 秒多 —— 打完基本就到点了，
+ *      于是长句几乎看不清。这里改成等 `typingTimer` 空了再计时。
  *
  * 锚点 `root.__dshWhaleMoeStarted = true;` 在 start() 里且全文唯一；
  * 万一上游改掉了这个锚点，这里会原样返回并把 patched 标成 false，
  * 页面上 `__dshWhaleMoeSay` 就不存在 —— 调用方据此降级，不会静默出错。
  */
 const MASCOT_PATCH_ANCHOR = 'root.__dshWhaleMoeStarted = true;';
+const MASCOT_PATCH = `/* shell-patched: 说话钩子（holdMs = 打完字后停留多久） */
+    root.__dshWhaleMoeSay = function (line, holdMs) {
+      showLineNow(line);
+      var hold = Number(holdMs) > 0 ? Number(holdMs) : 4500;
+      if (root.__dshWhaleMoeBubbleHold) root.clearInterval(root.__dshWhaleMoeBubbleHold);
+      root.__dshWhaleMoeBubbleHold = root.setInterval(function () {
+        if (typingTimer) return;
+        root.clearInterval(root.__dshWhaleMoeBubbleHold);
+        root.__dshWhaleMoeBubbleHold = null;
+        memory.bubbleHideAt = Date.now() + hold;
+      }, 120);
+    };
+    ${MASCOT_PATCH_ANCHOR}`;
 let mascotCache = null;
 
 function loadPatchedMascot(vendorDir) {
@@ -77,10 +97,7 @@ function loadPatchedMascot(vendorDir) {
   let body = original;
   let patched = false;
   if (original.includes(MASCOT_PATCH_ANCHOR)) {
-    body = original.replace(
-      MASCOT_PATCH_ANCHOR,
-      `root.__dshWhaleMoeSay = showLineNow; /* shell-patched: 暴露说话钩子 */\n    ${MASCOT_PATCH_ANCHOR}`,
-    );
+    body = original.replace(MASCOT_PATCH_ANCHOR, MASCOT_PATCH);
     patched = true;
   }
   mascotCache = { mtimeMs: stat.mtimeMs, body, patched, logged: false };

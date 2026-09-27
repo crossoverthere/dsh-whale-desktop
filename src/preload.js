@@ -19,8 +19,8 @@ contextBridge.exposeInMainWorld('whaleShell', {
   /** 打开养成 / 图鉴窗口；tab: quests | signin | badges | journal | achievements */
   openGrowth: (tab) => ipcRenderer.send('shell:open-growth', tab),
   quit: () => ipcRenderer.send('shell:quit'),
-  /** 让她说一句话（气泡里的「余额查询」用它播报）。文本由页面组装。 */
-  say: (text) => ipcRenderer.invoke('shell:say', text),
+  /** 让她说一句话（气泡里的「余额查询」用它播报）。文本由页面组装，holdMs = 打完字后停留多久。 */
+  say: (text, holdMs) => ipcRenderer.invoke('shell:say', text, holdMs),
   /** 今日消耗（主进程按 turn 记账，见 src/usage-today.js）：tokens/cost 已格式化好。 */
   getTodayUsage: () => ipcRenderer.invoke('shell:usage-today'),
   /** 渲染进程日志/报错回传，方便无界面时排查。 */

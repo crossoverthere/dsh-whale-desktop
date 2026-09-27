@@ -516,6 +516,19 @@
    *   · 今日消耗 —— 主进程的账本（读会话文件的 usage 按 turn 记账），
    *     数字在主进程格式化好再送过来，避免两处各写一套万/亿/小数规则。
    */
+  /**
+   * 播报类台词打完字后停留多久（毫秒）。
+   *
+   * 上游是"开口时"就设 4.5 秒到期，而台词逐字打（标点 260ms、每 5 字 130ms、其余 64ms），
+   * 余额那句子四十多字光打字就 4 秒多 —— 打完基本就到点了，等于看不清。
+   * 主进程注入的说话钩子改成**打完字再计时**（见 src/server.js 的 MASCOT_PATCH），
+   * 这里给的就是打完之后的停留时间。
+   *
+   * 声明放在使用点之前：本文件已经因为"const 声明晚于同步调用"踩过一次 TDZ
+   * （见上面 ensureHud 的注释），不再赌调用时序。
+   */
+  const SAY_HOLD_MS = 5000;
+
   let balanceQueryPending = false;
 
   async function queryBalance(button) {
@@ -557,7 +570,7 @@
       button.disabled = true;
     }
     try {
-      await api.say(line);
+      await api.say(line, SAY_HOLD_MS);
       refreshHud();
     } catch (error) {
       api.log('error', '余额查询失败：' + error.message);
@@ -568,6 +581,35 @@
       }
     }
   }
+
+  // ---------- 台词气泡：点一下提前收 ----------
+  /**
+   * 立刻收起台词气泡（提前看完的出路）。
+   *
+   * 动画与上游自己到点收起时完全一致：先淡出 200ms 再 hidden。
+   * 上游到点收起要求"打字结束且没有排队的下一句"，这里只是把它提前。
+   */
+  function hideBubbleNow() {
+    const bubble = document.querySelector('[data-dsh-whale-bubble]');
+    if (!bubble || bubble.hidden || bubble.classList.contains('dsh-whale-out')) {
+      return false;
+    }
+    bubble.classList.add('dsh-whale-out');
+    window.setTimeout(() => {
+      bubble.hidden = true;
+      bubble.classList.remove('dsh-whale-out');
+    }, 200);
+    return true;
+  }
+
+  /*
+   * 点一下就收。监听在 document 上：
+   * 上游给桌宠根节点挂了 `click` → stopPropagation（见 vendor 第 417 行），
+   * 所以能冒泡到 document 的点击**一定落在她以外**；点她身上另有互动台词会把气泡换掉。
+   */
+  document.addEventListener('click', () => {
+    hideBubbleNow();
+  });
 
   function refreshHud() {
     const hud = document.getElementById(HUD_ID);

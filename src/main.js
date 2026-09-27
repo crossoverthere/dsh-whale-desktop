@@ -313,11 +313,21 @@ function startDshWatcher() {
  * （磁盘上的 vendor 文件没动）。上游没改锚点它就一定在；万一不在，返回 false，
  * 调用方降级成"只写日志"，不会静默假装播报过。
  */
-function sayToPet(text) {
+/**
+ * 壳主动让她说的台词，打完字后停留多久（毫秒）。
+ *
+ * 5 秒是用户定的。关键在"**打完字之后**才开始计时"：上游原本是开口时设 4.5 秒到期，
+ * 而台词逐字打（标点 260ms、每 5 字 130ms、其余 64ms），余额播报那种四十多字的句子
+ * 光打字就 4 秒多 —— 打完就到点了，等于看不清。计时点由 server.js 注入的补丁搬到了
+ * 打字结束之后（见 MASCOT_PATCH）。
+ */
+const SAY_HOLD_MS = 5000;
+
+function sayToPet(text, holdMs = SAY_HOLD_MS) {
   if (!win || win.isDestroyed()) return Promise.resolve(false);
   const script = `(function(){ if (typeof window.__dshWhaleMoeSay !== 'function') return false; window.__dshWhaleMoeSay(${JSON.stringify(
     String(text),
-  )}); return true; })()`;
+  )}, ${Number(holdMs) || 0}); return true; })()`;
   return win.webContents.executeJavaScript(script).catch((error) => {
     log('[say] failed', error.message);
     return false;
@@ -1243,6 +1253,54 @@ function runSayProbe() {
       }
 
       /*
+       * 停留时间：注入的钩子把到期时间从"开口时"挪到了"打完字之后"。
+       * 旧行为下这句话光打字就 4 秒多（标点 260ms/每 5 字 130ms/其余 64ms），
+       * 开口时设的 4.5 秒到打完基本就用光了 —— 所以"打完 3 秒后仍可见"这条
+       * 恰好能把新旧行为区分开。
+       */
+      await sleep(3000);
+      const still = await readBubble();
+      check(
+        '播报停留够久：打完字 3 秒后仍可见',
+        Boolean(still && !still.hidden && still.text === expected),
+        JSON.stringify(still)
+      );
+
+      // 到点自动消失（5 秒 + 200ms 淡出 + 一拍状态机）
+      let gone = null;
+      const goneDeadline = Date.now() + 4000;
+      while (Date.now() < goneDeadline) {
+        gone = await readBubble();
+        if (!gone || gone.hidden || gone.text !== expected) break;
+        await sleep(200);
+      }
+      check(
+        '到点自动消失（打完字约 5 秒后）',
+        Boolean(gone) && (gone.hidden === true || gone.text !== expected),
+        JSON.stringify(gone)
+      );
+
+      // 点一下就收：再念一次，等打完字，然后点一下鼠标
+      await sayToPet(expected);
+      let typed = null;
+      const typedDeadline = Date.now() + 8000;
+      while (Date.now() < typedDeadline) {
+        typed = await readBubble();
+        if (typed && !typed.hidden && typed.text === expected) break;
+        await sleep(200);
+      }
+      await win.webContents.executeJavaScript(
+        `(() => { document.body.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()`
+      );
+      await sleep(600);
+      const dismissed = await readBubble();
+      check(
+        '点一下就收：鼠标点击后立刻消失',
+        Boolean(typed && !typed.hidden && typed.text === expected) && Boolean(dismissed) && dismissed.hidden === true,
+        JSON.stringify({ typed, dismissed })
+      );
+
+      /*
        * 阈值闸门：喂一个远低于阈值的 turn，气泡里不应再出现 tokens。
        * 注意断言的是"没有出现花费文案"，而不是"气泡保持隐藏"——
        * 桌宠可能在等待期间自己冒一句日常台词（那是正常的），
@@ -1280,7 +1338,7 @@ function runSayProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 5;
+    const expected = 8;
     log(
       '[say-probe]',
       results.length !== expected
@@ -1778,13 +1836,13 @@ function registerIpc() {
   ipcMain.on('shell:open-settings', () => openSettingsWindow());
   ipcMain.on('shell:open-growth', (_event, tab) => openGrowthWindow(tab));
   /** 设置窗口的"测试播报"按钮：直接让她说一句，用来确认钩子在真实环境里可用。 */
-  ipcMain.handle('shell:say', async (_event, text) => {
+  ipcMain.handle('shell:say', async (_event, text, holdMs) => {
     const line = String(text ?? '').trim() || announceText(
       { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 },
       costOf({ inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 }, null, Date.now()),
     );
-    const ok = await sayToPet(line);
-    log('[say] manual', ok ? 'ok' : 'unavailable', line);
+    const ok = await sayToPet(line, holdMs);
+    log('[say] manual', ok ? 'ok' : 'unavailable', `hold=${Number(holdMs) || SAY_HOLD_MS}`, line);
     return { ok, text: line };
   });
   /**

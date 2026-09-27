@@ -443,7 +443,7 @@ curl http://127.0.0.1:38911/__shell/state   # 其中 dsh 字段即会话文件�
 2. `reasoningTokens` 是 `outputTokens` 的**子集**，再加一遍就重复计费
 
 `src/dsh-state.js` 按 `turn/start` … `turn/end` 累加，`turn/end` 时通过 `onTurnEnd` 回调
-交给主进程（历史 turn 也回调，带 `historical: true`，见 6.5.5）。
+交给主进程（历史 turn 也回调，带 `historical: true`，见 6.5.6）。
 
 ### 6.5.2 计价：`src/pricing.js`（纯函数）
 
@@ -480,7 +480,41 @@ root.__dshWhaleMoeSay = showLineNow;   // 插在 root.__dshWhaleMoeStarted = tru
 所以 vendor 校验与上游同步都不受影响。锚点缺失时注入失败：打警告日志、原样返回、
 `X-Shell-Say-Hook: 0`，页面上没有钩子，主进程据此降级成"只写日志"。
 
-### 6.5.4 防刷屏与重启友好
+### 6.5.4 说话钩子的两个细节：打完字再计时、点一下就收
+
+上游 `showLineNow(line)` 在**开口那一刻**就把气泡到期时间设成 `now + 4500`，
+而它是逐字打的（`typeBubble`：标点 260ms、每 5 字 130ms、其余 64ms）。
+短句没问题（十来个字打 1 秒左右，还剩 3 秒多可读），
+但余额播报那种四十多字的句子光打字就 4 秒多 —— 打完正好到点，等于全文只闪一下。
+**问题不是 4.5 秒太短，而是计时起点不对。**
+
+所以注入的钩子带一个停留参数，并且把起点挪到打字结束：
+
+```js
+root.__dshWhaleMoeSay = function (line, holdMs) {
+  showLineNow(line);
+  var hold = Number(holdMs) > 0 ? Number(holdMs) : 4500;
+  if (root.__dshWhaleMoeBubbleHold) root.clearInterval(root.__dshWhaleMoeBubbleHold);
+  root.__dshWhaleMoeBubbleHold = root.setInterval(function () {
+    if (typingTimer) return;                    // 还在逐字打字
+    root.clearInterval(root.__dshWhaleMoeBubbleHold);
+    memory.bubbleHideAt = Date.now() + hold;    // 打完之后才开始算停留
+  }, 120);
+};
+```
+
+`typingTimer` 与 `memory` 都是上游闭包里的变量，锚点在 `start()` 里 ——
+同一作用域，所以读得到；`vendor/whale` 的磁盘文件依然一字未改。
+
+用户看完想提前收：壳在 `document` 上挂一个 click 监听，用**上游自己那套淡出动画**
+（加 `dsh-whale-out`，200ms 后 `hidden`）把气泡收起 —— 只是把"到点收起"提前。
+不需要操心传播：上游给桌宠根节点挂了 `click → stopPropagation`（vendor 第 417 行），
+所以能冒泡到 `document` 的点击一定落在她以外；点她身上另算互动，会把气泡换成互动台词。
+
+`say:probe` 里这三条断言是配套的：**打完字 3 秒后仍可见**（旧行为此时已收起）、
+**到点自动消失**、**点击后立刻消失**。
+
+### 6.5.5 防刷屏与重启友好
 
 - **历史 turn 一律不播报**：启动时会把整份历史读一遍，里面全是旧的 `turn/end`。
   加了一道 `primed` 闸门 —— 只有 `offset` 追平过文件尾之后到达的 `turn/end` 才播报。
@@ -489,7 +523,7 @@ root.__dshWhaleMoeSay = showLineNow;   // 插在 root.__dshWhaleMoeStarted = tru
   所以"追平历史"结束时它恰好等于**当前进行中 turn** 已累计的用量，直接保留即可。
 - **阈值**：低于 `costThreshold`（默认 0.01 元）不播报，连日志都只留一行。
 
-### 6.5.5 今日消耗账本：为什么要落盘 + 回放 + 去重
+### 6.5.6 今日消耗账本：为什么要落盘 + 回放 + 去重
 
 "今天一共烧了多少"和"这个 turn 花了多少"是两道题。后者在内存里累加就行，
 前者不行：桌宠每次升级都要重启，一重启清零的话数字会明显偏小；而 DSH 的会话文件里
@@ -509,7 +543,7 @@ root.__dshWhaleMoeSay = showLineNow;   // 插在 root.__dshWhaleMoeStarted = tru
 补账与播报是两件事，由调用方（`main.js` 的 `handleTurnEnd`）分开处理：
 **记账无条件做，播报只做实时且达到阈值的**。
 
-### 6.5.6 气泡「余额查询」念的那句话
+### 6.5.7 气泡「余额查询」念的那句话
 
 ```
 当前余额为 CNY 41.11，状态为充裕，今日共计消耗 35.2 万 tokens，消费 0.53 元
@@ -533,16 +567,17 @@ root.__dshWhaleMoeSay = showLineNow;   // 插在 root.__dshWhaleMoeStarted = tru
 余额查询）行为一致；探针里"日常养成"与"余额查询"各有一条断言，
 覆盖同步点击与异步播报两条路径。
 
-### 6.5.7 验证
+### 6.5.8 验证
 
 ```bash
-npm run test:cost    # 17 项离线断言：计价/峰谷/阈值/格式化/turn 累加/闸门
-npm run say:probe    # 5 项端到端断言：可见气泡里的完整文本 + 低阈值不播报
+npm run test:cost    # 24 项离线断言：计价/峰谷/阈值/格式化/turn 累加/闸门/今日账本
+npm run say:probe    # 8 项端到端断言：可见气泡的完整文本 + 停留时长 + 点击收起 + 低阈值不播报
 ```
 
 `say:probe` 断言的是**气泡里可见的完整文本**，而不是"window 上有个函数" ——
 钩子存在 ≠ 话说得出来（气泡节点可能没建、台词可能被 `localizeLine` 改写、
-气泡可能没被取消隐藏）。台词是逐字打出来的，所以探针会轮询到文本打满为止。
+气泡可能没被取消隐藏）。台词是逐字打出来的，所以探针会轮询到文本打满为止；
+"打完字 3 秒后仍可见"这条则把"计时起点在开口还是在打字结束"区分开。
 
 ## 6.6 设置窗口：二级菜单与"量出来的高度"
 
