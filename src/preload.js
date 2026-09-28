@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld('whaleShell', {
   openSettings: () => ipcRenderer.send('shell:open-settings'),
   /** 打开养成 / 图鉴窗口；tab: quests | signin | badges | journal | achievements */
   openGrowth: (tab) => ipcRenderer.send('shell:open-growth', tab),
+  /**
+   * 打开 DSH 网页界面（右键菜单里的「打开DSH」）。
+   * 已经在跑就只开浏览器，没跑才拉起来；返回
+   * { ok, url, running, started, pid?, opened, dryRun, source, error }。
+   */
+  openDsh: () => ipcRenderer.invoke('shell:open-dsh'),
   quit: () => ipcRenderer.send('shell:quit'),
   /** 让她说一句话（气泡里的「余额查询」用它播报）。文本由页面组装，holdMs = 打完字后停留多久。 */
   say: (text, holdMs) => ipcRenderer.invoke('shell:say', text, holdMs),

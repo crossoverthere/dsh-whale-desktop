@@ -11,16 +11,28 @@
  *   齿轮设置面板全部零改动可用 —— 这是改动量最小、行为最忠实宿主。
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShortcut } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, globalShortcut, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const http = require('node:http');
+const { spawn } = require('node:child_process');
 const { startPetServer } = require('./server');
 const { DshStateWatcher } = require('./dsh-state');
 const { startBalanceProxy } = require('./balance-proxy');
 const { costOf, shouldAnnounce, announceText, formatTokens, formatMoney, isPeak } = require('./pricing');
 const { loadTable, resolveRates, readDshModel, lookupModel } = require('./price-table');
 const { UsageLedger } = require('./usage-today');
+const {
+  DEFAULT_DSH_URL,
+  DEFAULT_BOOT_TIMEOUT_MS,
+  normalizeUrl,
+  resolveDshUrl,
+  probeDshWeb,
+  extractTokenUrl,
+  readTextTail,
+  resolveDshCommand,
+  waitForDshWeb,
+} = require('./open-dsh');
 
 /** 内置余额代理（见 src/balance-proxy.js）。 */
 let balanceProxy = null;
@@ -70,13 +82,21 @@ const DSH_PROBE = argValue('dsh-probe') !== undefined;
 const SETTINGS_PROBE = argValue('settings-probe') !== undefined;
 const GROWTH_PROBE = argValue('growth-probe') !== undefined;
 const SAY_PROBE = argValue('say-probe') !== undefined;
+const OPEN_DSH_PROBE = argValue('open-dsh-probe') !== undefined;
 /** 自检用：强制跳过单实例锁，便于与常驻实例并存做封闭测试。 */
 const STANDALONE = argValue('standalone') !== undefined;
 /** 自检用：临时覆盖监听端口，避免与常驻实例抢同一个源。 */
 const PORT_OVERRIDE = Number(argValue('port')) > 0 ? Number(argValue('port')) : null;
 /** shot / menu-probe / standalone 都是自检模式，要允许与常驻实例并存。 */
 const PROBE_MODE =
-  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE;
+  SHOT_MODE || MENU_PROBE || STANDALONE || DSH_PROBE || SETTINGS_PROBE || GROWTH_PROBE || SAY_PROBE || OPEN_DSH_PROBE;
+/**
+ * 「打开DSH」只演练、不真开浏览器。
+ *
+ * 任何自检模式都算演练 —— 否则跑一次探针就会往用户桌面上弹一个浏览器窗口，
+ * 那是拿他的桌面当测试场地。`--open-dsh-dry` 给人工演练用。
+ */
+const OPEN_DSH_DRY = PROBE_MODE || argValue('open-dsh-dry') !== undefined;
 
 let win = null;
 let tray = null;
@@ -124,6 +144,13 @@ const DEFAULT_CONFIG = {
   costPriceHit: 0.02,
   costPriceMiss: 1,
   costPriceOutput: 4,
+  /**
+   * 右键「打开DSH」要打开的地址。默认就是 DSH web profile 的默认监听；
+   * 换了端口/主机就改这里（设置窗口 → 维护 也能改）。
+   */
+  dshUrl: DEFAULT_DSH_URL,
+  /** 启动 DSH 的命令（留空 = 自动：npm 全局 dsh → PATH → npx）。 */
+  dshCommand: '',
 };
 
 function configPath() {
@@ -253,6 +280,7 @@ function createWindow() {
     if (SETTINGS_PROBE) runSettingsProbe();
     else if (GROWTH_PROBE) runGrowthProbe();
     else if (SAY_PROBE) runSayProbe();
+    else if (OPEN_DSH_PROBE) runOpenDshProbe();
     else if (DSH_PROBE) runDshProbe();
     else if (MENU_PROBE) runMenuProbe();
     else if (SHOT_MODE) scheduleShot();
@@ -1383,10 +1411,300 @@ function runSayProbe() {
   }, 3500);
 }
 
+// ---------------------------------------------------------------- 打开DSH 探针
+/**
+ * 「打开DSH」探针。关心四件事：
+ *
+ *   1) 纯逻辑：地址归一化、token 地址识别、启动命令解析（含端口 / npm shim / npx 兜底）
+ *   2) **已经在跑** → 只开浏览器：不重启、不再拉一个服务（拿 401 的替身服务当"在跑"，
+ *      这正是无 cookie 访问真 DSH 的真实表现）
+ *   3) **没在跑** → 真的把进程拉起来、等它应答、再打开；替身进程会往日志里写一行
+ *      带 token 的地址，用来断言"自己拉起来的这次能拿到可直接打开的地址"
+ *   4) **起不来** → 超时返回 ok:false，而不是假装成功
+ *
+ * 全程 dry-run：一个浏览器窗口都不会弹（那是用户的桌面，不是测试场地）。
+ * 替身命令是 electron 自己的 `ELECTRON_RUN_AS_NODE` 模式 —— 不依赖机器上装了 node。
+ */
+function runOpenDshProbe() {
+  const tmpDir = path.join(ROOT, 'tmp');
+
+  /** 拿一个空闲端口（listen(0) 问系统要，随即释放）。 */
+  const freePort = () =>
+    new Promise((resolve) => {
+      const probe = http.createServer();
+      probe.listen(0, '127.0.0.1', () => {
+        const { port } = probe.address();
+        probe.close(() => resolve(port));
+      });
+    });
+
+  const stubScript = (port, token) =>
+    `require('http').createServer((q,s)=>{s.writeHead(401);s.end('unauthorized')})` +
+    `.listen(${port},'127.0.0.1',()=>console.log('dsh web: http://127.0.0.1:${port}/?token=${token}'))`;
+
+  const stubSpec = (script) => ({
+    source: 'stub',
+    command: process.execPath,
+    args: ['-e', script],
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+  });
+
+  const killStub = (pid) => {
+    if (!pid) return;
+    try {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    } catch {
+      /* 收尾失败不影响断言 */
+    }
+  };
+
+  setTimeout(async () => {
+    const results = [];
+    const check = (name, ok, detail) => {
+      results.push({ name, ok });
+      log('[open-dsh-probe]', ok ? 'PASS' : 'FAIL', name, detail ? '-> ' + detail : '');
+    };
+    const spawned = [];
+
+    try {
+      // ---- 1) 纯逻辑 ----
+      const normalized = [
+        normalizeUrl(''),
+        normalizeUrl('  127.0.0.1:3080/  '),
+        normalizeUrl('http://127.0.0.1:3080///'),
+        normalizeUrl('https://box.example/dsh/?token=abc'),
+        normalizeUrl('::::'),
+      ];
+      check(
+        '地址归一化：空值→默认、裸主机补 http、去尾斜杠、保留 token、垃圾值→默认',
+        normalized[0] === DEFAULT_DSH_URL &&
+          normalized[1] === 'http://127.0.0.1:3080' &&
+          normalized[2] === 'http://127.0.0.1:3080' &&
+          normalized[3] === 'https://box.example/dsh?token=abc' &&
+          normalized[4] === DEFAULT_DSH_URL,
+        JSON.stringify(normalized)
+      );
+
+      const tokenLine =
+        '^Cdsh web: http://127.0.0.1:3080/?token=QtNoX9r5vKE96ijf5O84Q7TiIy94c6lDfNuiANOIgL4\n' +
+        'noise http://127.0.0.1:1/ not-a-token\n' +
+        'dsh web: http://127.0.0.1:3080/?token=P39pFCuwCeEIz9tLA-aVRX0jAFuKJYGD-OsNR0DJvuU\n';
+      check(
+        '从 dsh 输出里认出最后一行带 token 的地址（旧的/噪音的都不认）',
+        extractTokenUrl(tokenLine) ===
+          'http://127.0.0.1:3080/?token=P39pFCuwCeEIz9tLA-aVRX0jAFuKJYGD-OsNR0DJvuU' &&
+          extractTokenUrl('nothing here') === null,
+        String(extractTokenUrl(tokenLine))
+      );
+
+      const cmd = resolveDshCommand({ url: 'http://127.0.0.1:3099', platform: 'win32' });
+      const cmdNix = resolveDshCommand({
+        url: DEFAULT_DSH_URL,
+        platform: 'linux',
+        env: { PATH: path.dirname(process.execPath) },
+        exists: (file) => path.basename(file) === 'dsh',
+      });
+      check(
+        '启动命令：dsh web --no-open 且带上地址里的端口；找不到 dsh 时退回 npx',
+        cmd.args.includes('web') &&
+          cmd.args.includes('--no-open') &&
+          cmd.args.includes('3099') &&
+          cmdNix.args.includes('--no-open') &&
+          cmdNix.command.endsWith('dsh'),
+        JSON.stringify({ win32: cmd, linux: cmdNix })
+      );
+
+      // ---- 2) 已经在跑：只开浏览器，不重启 ----
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const liveServer = http.createServer((_req, res) => {
+        res.writeHead(401);
+        res.end('unauthorized');
+      });
+      const livePort = await new Promise((resolve) => {
+        liveServer.listen(0, '127.0.0.1', () => resolve(liveServer.address().port));
+      });
+      /*
+       * "不再拉服务"要拿**外部证据**来断言：替身命令会在被真的执行时留下一个文件，
+       * 走"已经在跑"这条路时它必须始终不出现（只看 pid 是空的证明不了没起过进程）。
+       */
+      const marker = path.join(tmpDir, 'open-dsh-probe-spawned.txt');
+      try {
+        fs.unlinkSync(marker);
+      } catch {
+        /* 之前就没有 */
+      }
+      const already = await openDshWeb({
+        url: `http://127.0.0.1:${livePort}`,
+        dryRun: true,
+        timeoutMs: 4000,
+        logPath: path.join(tmpDir, 'open-dsh-probe-live.log'),
+        command: stubSpec(`require('fs').writeFileSync(${JSON.stringify(marker)},'spawned')`),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const spawnedAnyway = fs.existsSync(marker);
+      await new Promise((resolve) => liveServer.close(resolve));
+      check(
+        '已经在跑（401）：直接打开，不重启也不再拉服务',
+        already.ok === true &&
+          already.running === true &&
+          already.started === false &&
+          already.pid === undefined &&
+          already.opened === false &&
+          spawnedAnyway === false,
+        JSON.stringify({ ...already, spawnedAnyway })
+      );
+
+      // ---- 3) 没在跑：拉起来 → 等应答 → 打开（并优先用日志里的 token 地址）----
+      const bootPort = await freePort();
+      const bootLog = path.join(tmpDir, 'open-dsh-probe.log');
+      fs.writeFileSync(bootLog, '');
+      const launched = await openDshWeb({
+        url: `http://127.0.0.1:${bootPort}`,
+        dryRun: true,
+        timeoutMs: 20000,
+        logPath: bootLog,
+        command: stubSpec(stubScript(bootPort, 'PROBEtoken123')),
+      });
+      spawned.push(launched.pid);
+      check(
+        '没在跑：把进程拉起来、等它应答，并回报 pid',
+        launched.ok === true &&
+          launched.started === true &&
+          launched.running === false &&
+          launched.pid > 0 &&
+          launched.baseUrl === `http://127.0.0.1:${bootPort}`,
+        JSON.stringify(launched)
+      );
+      check(
+        '自己拉起来的那次用日志里的 token 地址打开（旧 token 会 401）',
+        launched.url === `http://127.0.0.1:${bootPort}/?token=PROBEtoken123`,
+        String(launched.url)
+      );
+
+      // ---- 4) 起不来：超时报错，不假装成功 ----
+      const deadPort = await freePort();
+      const failed = await openDshWeb({
+        url: `http://127.0.0.1:${deadPort}`,
+        dryRun: true,
+        timeoutMs: 2500,
+        logPath: path.join(tmpDir, 'open-dsh-probe-fail.log'),
+        command: stubSpec('setTimeout(()=>{},10)'),
+      });
+      spawned.push(failed.pid);
+      check(
+        '起不来（超时）：ok:false + error=timeout，且没有假装打开',
+        failed.ok === false && failed.error === 'timeout' && failed.opened === false && failed.started === true,
+        JSON.stringify(failed)
+      );
+
+      // ---- 5) 页面里那条菜单项真的接到了主进程 ----
+      /*
+       * 用一个 401 的替身服务冒充"DSH 已经在跑"，**只改内存里的 config.dshUrl**
+       * （不经 IPC 写盘，不碰用户的配置文件），然后真的点一下菜单项；
+       * 断言从 `/__shell/state`（HTTP，外部脚本读的那一份）能看到这次调用的结果 ——
+       * 这样"菜单项 → 预加载 → 主进程 → 打开"整条链子都被覆盖，而不只是标签存在。
+       */
+      const clickServer = http.createServer((_req, res) => {
+        res.writeHead(401);
+        res.end('unauthorized');
+      });
+      const clickPort = await new Promise((resolve) => {
+        clickServer.listen(0, '127.0.0.1', () => resolve(clickServer.address().port));
+      });
+      const clickUrl = `http://127.0.0.1:${clickPort}`;
+      const savedUrl = config.dshUrl;
+      config.dshUrl = clickUrl;
+      let click = null;
+      let openDshState = null;
+      try {
+        click = await win.webContents.executeJavaScript(`(async () => {
+          const frame = document.querySelector('[data-dsh-whale-frame]');
+          if (!frame) return { error: 'no whale frame' };
+          frame.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
+          await new Promise((r) => setTimeout(r, 350));
+          const menu = document.querySelector('[data-dsh-whale-context]');
+          if (!menu) return { error: 'no context menu' };
+          const labels = [...menu.querySelectorAll('button')].map((b) => b.textContent.trim());
+          const item = [...menu.querySelectorAll('button')].find((b) => b.textContent.trim() === '打开DSH');
+          if (!item) return { error: 'no 打开DSH item', labels };
+          item.click();
+          await new Promise((r) => setTimeout(r, 500));
+          return { labels, menuClosed: !document.querySelector('[data-dsh-whale-context]') };
+        })()`);
+
+        const readState = () =>
+          new Promise((resolve) => {
+            const request = http.get(`${server.url}/__shell/state`, { timeout: 2000 }, (response) => {
+              let body = '';
+              response.on('data', (chunk) => {
+                body += chunk;
+              });
+              response.on('end', () => {
+                try {
+                  resolve(JSON.parse(body));
+                } catch {
+                  resolve(null);
+                }
+              });
+            });
+            request.on('timeout', () => {
+              request.destroy();
+              resolve(null);
+            });
+            request.on('error', () => resolve(null));
+          });
+        const deadline = Date.now() + 4000;
+        for (;;) {
+          const state = await readState();
+          if (state && state.openDsh) {
+            openDshState = state.openDsh;
+            break;
+          }
+          if (Date.now() >= deadline) break;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      } finally {
+        config.dshUrl = savedUrl;
+        await new Promise((resolve) => clickServer.close(resolve));
+      }
+      check(
+        '点菜单里的「打开DSH」→ 走通预加载/主进程并收起菜单',
+        click &&
+          click.menuClosed === true &&
+          click.labels &&
+          click.labels.includes('打开DSH') &&
+          openDshState &&
+          openDshState.ok === true &&
+          openDshState.running === true &&
+          openDshState.dryRun === true &&
+          openDshState.opened === false &&
+          openDshState.url === clickUrl,
+        JSON.stringify({ click, openDshState })
+      );
+    } catch (error) {
+      log('[open-dsh-probe] failed', error.message);
+    } finally {
+      spawned.forEach(killStub);
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    const expected = 8;
+    log(
+      '[open-dsh-probe]',
+      results.length !== expected
+        ? `DONE 断言数不符：跑了 ${results.length} 项、预期 ${expected} 项，失败 ${failed} 项`
+        : failed === 0
+          ? `DONE 全部 ${expected} 项通过`
+          : `DONE ${failed}/${expected} 项未通过`
+    );
+    app.exit(failed === 0 && results.length === expected ? 0 : 1);
+  }, 2500);
+}
+
 // ---------------------------------------------------------------- 设置窗口探针
 /**
  * 覆盖职责划分与设置窗口两件事：
- *   1) 桌宠右键菜单只留交互项（不该再有「打开看板娘设置」）
+ *   1) 桌宠右键菜单只留交互项（不该再有「打开看板娘设置」），但要有「打开DSH」
  *   2) 托盘菜单有「设置…」，点它能弹出独立设置窗口
  *   3) 设置窗口按分类展示，含全部可配置项
  *   4) 窗口首帧/失焦后都真的渲染出内容（防白屏回归）
@@ -1432,6 +1750,11 @@ function runSettingsProbe() {
         '桌宠菜单保留交互项',
         interaction.every((item) => labels.includes(item)),
         JSON.stringify(interaction.filter((item) => !labels.includes(item)))
+      );
+      check(
+        '桌宠菜单里有「打开DSH」（壳层注入的那一条，上游素材未改）',
+        labels.includes('打开DSH'),
+        JSON.stringify(labels)
       );
       if (labels.length === 0) {
         throw new Error('桌宠右键菜单没打开：' + JSON.stringify(mascotMenu));
@@ -1512,6 +1835,43 @@ function runSettingsProbe() {
           switched.visiblePanels.join(',') === 'cost' && switched.rows > 0 && switched.selected.join(',') === '花费播报',
           JSON.stringify(switched)
         );
+
+        /*
+         * 「DSH WebUI」那一行：地址可改 + 一个「打开」按钮。
+         * 顺手量一下这一行有没有被撑出横向滚动 —— "输入框 + 按钮"最容易把行撑破，
+         * 而撑破只会在真机上表现为一条横向滚动条，不会报错。
+         */
+        const dshUi = await settingsWin.webContents.executeJavaScript(`(() => {
+          const rail = [...document.getElementById('rail').querySelectorAll('button')]
+            .find((b) => b.textContent.trim() === '维护');
+          rail.click();
+          const row = [...document.querySelectorAll('.row')]
+            .find((r) => (r.querySelector('.name') || {}).textContent === 'DSH WebUI');
+          if (!row) return { found: false };
+          const input = row.querySelector('input');
+          const button = row.querySelector('button');
+          return {
+            found: true,
+            visible: !row.closest('section[data-panel]').hidden,
+            inputValue: input ? input.value : null,
+            button: button ? button.textContent.trim() : null,
+            hint: (row.querySelector('.hint') || {}).textContent || '',
+            rowOverflow: row.scrollWidth - row.clientWidth,
+            bodyOverflow: document.body.scrollWidth - document.body.clientWidth,
+          };
+        })()`);
+        check(
+          '「DSH WebUI」行：地址可改 + 有「打开」按钮，且不撑出横向滚动',
+          dshUi.found &&
+            dshUi.visible &&
+            typeof dshUi.inputValue === 'string' &&
+            dshUi.inputValue.startsWith('http') &&
+            dshUi.button === '打开' &&
+            dshUi.hint.length > 0 &&
+            dshUi.rowOverflow <= 0 &&
+            dshUi.bodyOverflow <= 0,
+          JSON.stringify(dshUi)
+        );
         /*
          * 收拾干净：上面那一点会把"上次看的分类"记进 localStorage（真实使用时是有用的），
          * 但探针不该给用户留下界面状态 —— 否则他打开设置窗口会莫名停在探针点过的那一屏。
@@ -1524,7 +1884,7 @@ function runSettingsProbe() {
           '看板娘', '台词气泡', '粒子效果',
           '总是置顶', '跟随 DSH 工作状态', '开机自启',
           '大小', '位置',
-          '重新加载页面', '数据目录', '运行日志',
+          '重新加载页面', '数据目录', '运行日志', 'DSH WebUI',
           '天气城市', '天气 API Key', '显示余额', '余额接口',
           '播报本次花费', '播报阈值（元）', '手动配置（元/百万）',
         ];
@@ -1700,7 +2060,7 @@ function runSettingsProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 18;
+    const expected = 20;
     log(
       '[settings-probe]',
       results.length !== expected
@@ -1834,6 +2194,145 @@ function scheduleShot() {
   }, delay);
 }
 
+// ---------------------------------------------------------------- 打开 DSH
+/**
+ * 桌宠右键菜单里的「打开DSH」：**已经在跑就直接开浏览器，没跑才拉起来**。
+ *
+ * 有一条底线：**正在跑的 DSH 绝不重启**。用户此刻很可能正在里面聊天，
+ * 重启会把会话一起带走（`dsh web` 的 token 是每次启动新生成的）。
+ * 所以这里只做两件事：探活、必要时拉起。真正的启停策略归用户。
+ *
+ * 判定与命令解析在 src/open-dsh.js（纯 node，可脚本化验证），这里只负责
+ * 进程与浏览器这两件必须有 Electron 才能干的事。
+ */
+
+/** 拉起来的 DSH 输出写这里（token 地址也在这里，排查时直接看）。 */
+function dshWebLogFile() {
+  return path.join(app.getPath('userData'), 'dsh-web.log');
+}
+
+/** 正在进行中的那一次「打开DSH」：连点两下不该拉起两个服务。 */
+let openDshPending = null;
+
+/** 最近一次「打开DSH」的结果，经 /__shell/state 暴露（自检与排查用）。 */
+function rememberOpenDsh(result) {
+  shellState.openDsh = { ...result, at: Date.now() };
+  return result;
+}
+
+/** 开浏览器。dry-run 时只记日志 —— 自检不该往用户桌面上弹窗口。 */
+async function openExternalSafe(url, dryRun) {
+  if (dryRun) {
+    log('[dsh] (dry-run) 本该打开', url);
+    return false;
+  }
+  try {
+    await shell.openExternal(url);
+    return true;
+  } catch (error) {
+    log('[dsh] 打开浏览器失败', error.message);
+    return false;
+  }
+}
+
+/**
+ * detached 起进程：桌宠退出后 DSH 要活着，所以 detached + unref。
+ *
+ * 输出直接接到日志文件的 fd 上（而不是管道）：父进程一旦退出，管道那一头就断了，
+ * 服务往断掉的 stdout 写会出岔子。交给文件句柄则与父进程死活无关。
+ */
+function spawnDshWeb(spec, logPath) {
+  let fd = null;
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fd = fs.openSync(logPath, 'a');
+    const child = spawn(spec.command, spec.args, {
+      cwd: spec.cwd || ROOT,
+      detached: true,
+      windowsHide: true,
+      stdio: ['ignore', fd, fd],
+      env: { ...process.env, ...(spec.env || {}) },
+    });
+    child.on('error', (error) => log('[dsh] 子进程错误', spec.source, error.message));
+    child.on('exit', (code, signal) => log('[dsh] 子进程退出', spec.source, 'code=' + code, 'signal=' + signal));
+    child.unref();
+    return child;
+  } catch (error) {
+    log('[dsh] 启动失败', spec.source, error.message);
+    return null;
+  } finally {
+    if (fd !== null) {
+      fs.closeSync(fd);
+    }
+  }
+}
+
+/**
+ * 打开 DSH。返回 { ok, url, running, started, pid?, opened, dryRun, source, error }。
+ *
+ * `options` 是给探针用的替身入口（url / command / probe / timeoutMs / logPath / dryRun）：
+ * 不注入任何东西时就是真实行为。
+ */
+async function openDshWeb(options = {}) {
+  const url = resolveDshUrl({ configured: options.url || config.dshUrl });
+  const dryRun = options.dryRun === undefined ? OPEN_DSH_DRY : Boolean(options.dryRun);
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : DEFAULT_BOOT_TIMEOUT_MS;
+  const probe = typeof options.probe === 'function' ? options.probe : (target) => probeDshWeb(target);
+  const logPath = options.logPath || dshWebLogFile();
+
+  // 1) 已经在跑 —— 只开浏览器
+  if (await probe(url)) {
+    log('[dsh] 已经在跑，直接打开', url);
+    const opened = await openExternalSafe(url, dryRun);
+    return rememberOpenDsh({
+      ok: true, url, running: true, started: false, opened, dryRun, source: null, error: null,
+    });
+  }
+
+  // 2) 没在跑 —— 拉起来，等它应答，再开浏览器
+  const spec = options.command || resolveDshCommand({ url, override: config.dshCommand });
+  log('[dsh] 启动中', spec.source, JSON.stringify([spec.command, ...spec.args]), '→', logPath);
+  const child = spawnDshWeb(spec, logPath);
+  if (!child) {
+    return rememberOpenDsh({
+      ok: false, url, running: false, started: false, opened: false, dryRun,
+      source: spec.source, error: 'spawn-failed', logPath,
+    });
+  }
+
+  let tokenUrl = null;
+  const ready = await waitForDshWeb({
+    url,
+    timeoutMs,
+    probe,
+    // 起来之前顺手从日志里捞 token 地址：服务每次启动都换 token，只有自己拉起来的这次拿得到
+    onTick: () => {
+      if (!tokenUrl) {
+        tokenUrl = extractTokenUrl(readTextTail(logPath));
+      }
+    },
+  });
+  if (!tokenUrl) {
+    tokenUrl = extractTokenUrl(readTextTail(logPath));
+  }
+
+  if (!ready) {
+    log('[dsh] 启动超时', timeoutMs + 'ms', 'pid', child.pid, '→ 看', logPath);
+    return rememberOpenDsh({
+      ok: false, url, running: false, started: true, pid: child.pid, opened: false, dryRun,
+      source: spec.source, error: 'timeout', logPath,
+    });
+  }
+
+  const target = tokenUrl || url;
+  const opened = await openExternalSafe(target, dryRun);
+  log('[dsh] 已启动', 'pid', child.pid, '打开', target);
+  return rememberOpenDsh({
+    ok: true, url: target, baseUrl: normalizeUrl(url), running: false, started: true, pid: child.pid,
+    opened, dryRun, source: spec.source, error: null, logPath,
+  });
+}
+
 // ---------------------------------------------------------------- IPC
 function registerIpc() {
   ipcMain.on('shell:interactive', (_event, value) => {
@@ -1861,6 +2360,10 @@ function registerIpc() {
         if (patch[key] === undefined || patch[key] === null || patch[key] === '') continue;
         const value = Number(patch[key]);
         if (Number.isFinite(value) && value >= 0) config[key] = value;
+      }
+      // 「打开DSH」的地址与命令：纯字符串，改完即生效（下一次点菜单就用新的）
+      for (const key of ['dshUrl', 'dshCommand']) {
+        if (typeof patch[key] === 'string') config[key] = patch[key].trim();
       }
       saveConfig();
     }
@@ -1951,6 +2454,19 @@ function registerIpc() {
   });
   ipcMain.on('shell:open-settings', () => openSettingsWindow());
   ipcMain.on('shell:open-growth', (_event, tab) => openGrowthWindow(tab));
+  /**
+   * 「打开DSH」（桌宠右键菜单 / 设置窗口的「打开」按钮）：
+   * 已经在跑就开浏览器，没跑就 detached 拉起来再开。
+   * 并发调用共享同一次操作 —— 连点两下不该拉起两个服务。
+   */
+  ipcMain.handle('shell:open-dsh', () => {
+    if (!openDshPending) {
+      openDshPending = openDshWeb().finally(() => {
+        openDshPending = null;
+      });
+    }
+    return openDshPending;
+  });
   /** 设置窗口的"测试播报"按钮：直接让她说一句，用来确认钩子在真实环境里可用。 */
   ipcMain.handle('shell:say', async (_event, text, holdMs) => {
     const sample = { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 };
@@ -2047,6 +2563,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
           petRect: shellState.petRect,
           dsh: dshWatcher ? dshWatcher.snapshot() : null,
           lastDshState,
+          openDsh: shellState.openDsh || null,
           updatedAt: shellState.updatedAt,
           cursor: screen.getCursorScreenPoint(),
           workArea: screen.getPrimaryDisplay().workArea,

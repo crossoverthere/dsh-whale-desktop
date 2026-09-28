@@ -137,6 +137,7 @@
 
   function watchMenu(menu) {
     stripNonInteractionItems(menu);
+    injectOpenDshItem(menu);
     clampIntoViewport(menu);
     // 布局可能要到下一帧才稳定，再夹一次兜底
     requestAnimationFrame(() => clampIntoViewport(menu));
@@ -195,6 +196,79 @@
         button.remove();
         api.log('info', `已从桌宠右键菜单摘掉「${label}」（它属于设置，已移到托盘 → 设置窗口）`);
       }
+    }
+  }
+
+  // ---------- 桌宠右键菜单：补一条「打开DSH」 ----------
+  /**
+   * 上游的菜单是它自己拼的（vendor/whale 里的 showContextMenu），壳层不改素材，
+   * 只在菜单出现后往「关闭菜单」前面插一条 —— 与摘掉「打开看板娘设置」同一时机。
+   *
+   * 这件事为什么该在桌宠菜单里：它跟"设置"不同，是**唤起 DSH 本身**，
+   * 属于"对她做的/通过她做的一件事"，和投喂、夸夸是一个层级的动作。
+   *
+   * 主进程那边保证：DSH 已经在跑就只开浏览器（绝不重启 —— 重启会把用户
+   * 正在聊的会话一起带走），没跑才拉起来。
+   */
+  const OPEN_DSH_LABEL = '打开DSH';
+
+  function injectOpenDshItem(menu) {
+    if (menu.querySelector('[data-dsh-open-dsh]')) {
+      return;
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = OPEN_DSH_LABEL;
+    button.setAttribute('data-dsh-open-dsh', 'true');
+    button.addEventListener('click', (event) => {
+      // 上游给菜单项的约定：点击即收起菜单（点外面收起的那套逻辑也认这个）
+      event.stopPropagation();
+      menu.remove();
+      openDsh();
+    });
+
+    const close = Array.from(menu.querySelectorAll('button')).find(
+      (node) => (node.textContent || '').trim() === '关闭菜单'
+    );
+    if (close) {
+      menu.insertBefore(button, close);
+    } else {
+      menu.append(button);
+    }
+  }
+
+  /**
+   * 「打开DSH」：已经在跑就开浏览器，没跑就拉起来再开。
+   *
+   * 停留时长用主进程的默认值（5 秒，同余额查询），这里不再传 ——
+   * 少一个常量就少一处能对不上的地方。
+   */
+  async function openDsh() {
+    if (typeof api.openDsh !== 'function') {
+      api.log('error', '打开DSH：预加载通道不可用');
+      return;
+    }
+    api.log('info', '打开DSH：开始');
+    try {
+      const result = await api.openDsh();
+      /*
+       * 台词要跟**真实结果**对齐：主进程把"浏览器到底开没开成"也回报过来了
+       * （opened），不能出现"她说打开了、实际没打开"这种谎报。
+       */
+      const failedToOpen = result && result.opened === false && result.dryRun !== true;
+      const line = !result || !result.ok
+        ? 'DSH 没起来…你看看运行日志吧'
+        : failedToOpen
+          ? 'DSH 是开着的，可浏览器没调起来…'
+          : result.running
+            ? 'DSH 已经开着啦，这就给你打开～'
+            : 'DSH 起来了，浏览器已经给你打开～';
+      api.log('info', `打开DSH：${line} ${(result && result.url) || ''} ${(result && result.error) || ''}`);
+      if (typeof api.say === 'function') {
+        await api.say(line);
+      }
+    } catch (error) {
+      api.log('error', `打开DSH 失败：${(error && error.message) || error}`);
     }
   }
 

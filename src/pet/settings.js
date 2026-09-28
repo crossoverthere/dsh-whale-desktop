@@ -164,6 +164,64 @@
     return Promise.resolve(null);
   }
 
+  /**
+   * 「DSH WebUI」：地址可改（换了端口/主机的人），点「打开」走主进程那套
+   * 「已经在跑就只开浏览器、没跑就拉起来」的逻辑 —— 与右键菜单里的「打开DSH」
+   * 是同一件事，只是这里还能顺手把地址改掉。
+   *
+   * 反馈写在行内的 hint 里（和「测试播报」同一套做法）：这个动作要等好几秒，
+   * 没有反馈用户只会以为没点上。
+   */
+  function dshRow(config) {
+    const wrap = document.createElement('div');
+    wrap.className = 'row';
+    const text = document.createElement('div');
+    text.className = 'text';
+    text.append(Object.assign(document.createElement('div'), { className: 'name', textContent: 'DSH WebUI' }));
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = '已经在跑就只打开浏览器；没跑就把它拉起来';
+    text.append(hint);
+
+    const field = document.createElement('div');
+    field.className = 'field-group';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'text-input';
+    input.value = config.dshUrl || '';
+    input.placeholder = 'http://127.0.0.1:3080';
+    input.addEventListener('change', () => applyConfig({ dshUrl: input.value.trim() }));
+    input.addEventListener('click', (event) => event.preventDefault());
+
+    const opened = actionButton('打开', async () => {
+      if (typeof api.openDsh !== 'function') {
+        return;
+      }
+      hint.textContent = '正在打开…';
+      try {
+        const result = await api.openDsh();
+        if (!result || !result.ok) {
+          hint.textContent = `没起来（${(result && result.error) || '未知错误'}）—— 细节看运行日志`;
+        } else if (result.opened === false && result.dryRun !== true) {
+          hint.textContent = '地址已就绪，但浏览器没打开 —— 细节看运行日志';
+        } else if (result.running) {
+          hint.textContent = '本来就在跑，只开了浏览器';
+        } else {
+          hint.textContent = `刚拉起来（${result.pid}），已交给浏览器`;
+        }
+        if (result && result.dryRun) {
+          hint.textContent += '（演练，未真的打开）';
+        }
+      } catch (error) {
+        hint.textContent = `失败：${(error && error.message) || error}`;
+      }
+    });
+
+    field.append(input, opened);
+    wrap.append(text, field);
+    return wrap;
+  }
+
   async function renderShellConfig() {
     if (typeof api.getConfig !== 'function') {
       return;
@@ -195,6 +253,7 @@
     const maintGroup = document.getElementById('group-maint');
     maintGroup.append(
       row('重新加载页面', '改完素材或排查问题时用', actionButton('执行', () => api.reloadPet && api.reloadPet())),
+      dshRow(config),
       row('数据目录', '存档与配置（localStorage / config.json）', actionButton('打开', () => api.openDataDir && api.openDataDir())),
       row('运行日志', '主进程与页面的日志汇总', actionButton('打开', () => api.openLog && api.openLog()))
     );

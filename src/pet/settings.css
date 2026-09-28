@@ -212,6 +212,18 @@ select {
   gap: 8px;
 }
 
+/* 「输入框 + 按钮」这类小组合（DSH WebUI 的地址与打开按钮） */
+.field-group {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.field-group .text-input {
+  flex: 0 1 210px;
+}
+
 .mini {
   display: flex;
   flex-direction: column;

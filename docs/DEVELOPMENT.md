@@ -232,7 +232,7 @@ win.once('ready-to-show', () => { win.show(); win.focus(); win.webContents.inval
 
 | 入口 | 放什么 | 为什么 |
 | --- | --- | --- |
-| 桌宠右键菜单 | **只放对她做的事**（投喂/戳/夸/小游戏/回到原位） | 右键她时的心智是"我要逗她" |
+| 桌宠右键菜单 | **只放对她做的事 + 唤起 DSH**（投喂/戳/夸/小游戏/回到原位/**打开DSH**） | 右键她时的心智是"我要逗她"；「打开DSH」是同一层级的"通过她做一件事" |
 | 托盘右键菜单 | 高频全局动作 + 快速开关（显示桌宠 / 设置… / 置顶 / 跟随 DSH / 自启 / 大小 / 重置位置 / 重载 / 数据目录 / 日志 / 退出） | 她藏起来时唯一还能点到的入口，顺手的开关不必进窗口 |
 | 设置窗口 | 完整可配置项，分 4 类 | 需要解释的项集中一处，带说明文字 |
 
@@ -258,6 +258,11 @@ win.once('ready-to-show', () => { win.show(); win.focus(); win.webContents.inval
 
 判断"要不要摘"用的是 `hasDshSettingsEntry()`：页面上真有 DSH 设置入口时不摘，
 这样把页面嵌回 DSH 时行为自动回到上游原样。
+
+**同理，往里补一条也算壳层的事**：「打开DSH」是 `injectOpenDshItem` 在同一个
+`watchMenu` 里插到「关闭菜单」之前的（`vendor/whale/` 依旧一个字没改）。
+插入点在 `stripNonInteractionItems` **之后** —— 先摘后补，
+顺序反了会把两条 item 的插入位置算错。
 
 ## 5. 养成 / 图鉴与头顶浮层
 
@@ -636,6 +641,86 @@ npm run say:probe    # 8 项端到端断言：可见气泡的完整文本 + 停�
 另外主进程套用时会 +4px 余量：`offsetHeight` 不含子元素的下外边距，
 少这几像素就会平白多出一条滚动条。
 
+## 6.7 「打开DSH」：唤起优先，绝不重启
+
+右键菜单里那条「打开DSH」要做的事只有一句：**把 DSH 网页界面呈现在你面前**。
+但"呈现"有三种情况，处理错了每一种都会咬人。
+
+### 6.7.1 判定：401 也算"在跑"
+
+DSH 的 `/api` 外面有一道 browser-trust 围栏。实测（无 cookie）：
+
+```
+GET http://127.0.0.1:3080/           -> 401
+GET http://127.0.0.1:3080/?token=…   -> 200（token 是**本次启动**生成的那个）
+```
+
+所以探活只看"HTTP 有没有应答"：**401 是在跑，连接被拒才是没跑**。
+反过来（把 401 当没跑）会平白再拉一个服务起来抢同一个端口 —— 那比"打开一个
+认证可能失败的页面"糟得多。判定在 `src/open-dsh.js: probeDshWeb`。
+
+### 6.7.2 绝不重启正在跑的 DSH
+
+token 每次启动都换，重启等于把用户正在聊的会话连同页面一起打断。
+所以"在跑"这一路**只**做 `shell.openExternal`，一个进程都不动。
+
+这条是硬约束，不是优化：桌宠是挂在 DSH 旁边的挂件，没有资格替用户决定重启。
+
+### 6.7.3 没在跑：detached 拉起 + 自己的 token 自己捡
+
+```js
+spawn(spec.command, spec.args, {
+  detached: true,                       // 桌宠退了，DSH 要活着
+  windowsHide: true,
+  stdio: ['ignore', fd, fd],            // 直接接日志文件的 fd，不走管道
+  env: { ...process.env, ...spec.env },
+});
+child.unref();
+```
+
+两个细节：
+
+- **走文件 fd 而不是管道**：管道另一头是父进程，父进程一死管道就断，
+  服务往断掉的 stdout 写会出岔子。文件句柄与父进程死活无关。
+- **`--no-open`**：浏览器由我们开，这样才能把"起没起来"回报给她；
+  顺带"只弹一个浏览器窗口"成为确定行为。
+
+命令解析（`resolveDshCommand`）的顺序：用户配置 → `%APPDATA%\npm\dsh.cmd`
+（实测这台机器上就是它）→ PATH 里的 `dsh.cmd` → `npx --yes @deepseek-ai/dsh`。
+Windows 上 `.cmd/.bat` 必须经 `cmd.exe`，node 的 `spawn` 不能直接执行批处理；
+地址里写了端口就显式带上 `--port`，免得"打开的地址"与"监听的端口"各说各话。
+
+拉起之后轮询到应答为止（默认 30 秒），同时每轮从日志尾巴里捞一次
+`http://…/?token=…`：**只有自己拉起来的这一次能拿到可用 token**，
+拿不到就退回裸地址（浏览器里已经存着 cookie 时照样能用）。
+旧 token 拿来访问正在跑的服务实测**两个都是 401**，所以不缓存、不猜。
+
+### 6.7.4 自检一律 dry-run
+
+任何 `--*-probe` 模式（以及 `--open-dsh-dry`）下只演练、**绝不真的开浏览器** ——
+否则跑一次探针就会往用户桌面上弹一个窗口。
+
+`npm run open-dsh:probe` 的 8 项断言：
+
+| # | 断言 | 怎么测的 |
+| --- | --- | --- |
+| 1 | 地址归一化（空值/裸主机/尾斜杠/token/垃圾值） | 纯函数 |
+| 2 | 从 `dsh web:` 输出里认出**最后一行**带 token 的地址 | 纯函数（带噪音行） |
+| 3 | 启动命令含 `web --no-open --port <地址里的端口>` | 纯函数（win32/linux 两条路径） |
+| 4 | 已经在跑 → `running:true` 且**没有起过进程** | 401 替身服务 + 一个"被真的执行就写文件"的替身命令（只看 `pid` 是空的证明不了没起过） |
+| 5 | 没在跑 → 拉起、等应答、回报 `pid` | 替身进程（`ELECTRON_RUN_AS_NODE`，不依赖机器上装了 node） |
+| 6 | 自己拉起来的这次用日志里的 token 地址打开 | 替身进程往日志里打一行 token 地址 |
+| 7 | 起不来 → 超时 `ok:false`，不假装成功 | 起来就退出的替身命令 |
+| 8 | 点菜单里的「打开DSH」→ 走通预加载/主进程并收起菜单 | 真点 DOM；只改**内存里**的 `config.dshUrl` 指向替身服务（不写盘、不碰用户配置），结果从 `/__shell/state` 读 |
+
+第 8 项断言的是 `/__shell/state`（HTTP，外部可读的那一份）而不是进程里的变量：
+"菜单项存在"证明不了链路通。另有 `npm run settings:probe` 守着
+设置窗口 →「维护」→「DSH WebUI」那一行（地址可改 + 有「打开」按钮 + 不撑出横向滚动）。
+
+**真实鼠标**那一步是单独手动验过的（`--standalone` 实例 + `mouse_event`）：
+右键她 → 点第 7 项 → `openDsh` 回 `{ok:true, running:true, dryRun:true, opened:false}`。
+菜单项几何（194x292、8 项）可以直接算，见 `src/main.js` 里 menu-probe 的实测值。
+
 ## 7. 调试手段（看不到屏幕时靠这些）
 
 ```bash
@@ -643,6 +728,7 @@ npm run shot        # 启动 → 等 5 秒 → 截图 → 打印 DOM 状态 → 
 npm run shot -- --shot-delay=8000 --shot=D:\tmp\a.png
 npm run menu:probe  # 右键菜单越界探针（打印溢出像素 + PASS/FAIL + 截图）
 npm run say:probe   # 让她说一句样本并断言气泡文本（花费播报链路）
+npm run open-dsh:probe # 「打开DSH」：探活/token/启动命令/拉起与超时/菜单项链路（全程 dry-run）
 npm run test:cost   # 计价 / 账本 / 价目表与刷新解析器 单测（不需要 Electron）
 npm run verify:shell   # 自动验证点击穿透（会真的移动指针，跑完还原）
 ```
@@ -657,6 +743,8 @@ npm run verify:shell   # 自动验证点击穿透（会真的移动指针，跑�
 - 日志文件：`%APPDATA%\dsh-whale-desktop\shell.log`
   （主进程 + 渲染进程 console + 页面 error 都会汇总到这里）
   托盘菜单 →「打开日志」可直接打开
+- 「打开DSH」自己拉起来的那个服务的输出在**同目录的 `dsh-web.log`**
+  （浏览器信任 token 也打在这里，排查"打开了但 401"先看它）
 
 ### 已知环境坑
 
