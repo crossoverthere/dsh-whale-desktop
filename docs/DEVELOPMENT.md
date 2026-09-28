@@ -666,33 +666,74 @@ token 每次启动都换，重启等于把用户正在聊的会话连同页面�
 
 这条是硬约束，不是优化：桌宠是挂在 DSH 旁边的挂件，没有资格替用户决定重启。
 
-### 6.7.3 没在跑：detached 拉起 + 自己的 token 自己捡
+### 6.7.3 没在跑：交接给 shell 起，别挂在自己身上
 
-```js
-spawn(spec.command, spec.args, {
-  detached: true,                       // 桌宠退了，DSH 要活着
-  windowsHide: true,
-  stdio: ['ignore', fd, fd],            // 直接接日志文件的 fd，不走管道
-  env: { ...process.env, ...spec.env },
-});
-child.unref();
+0.12.0 的第一版是直接 `spawn('cmd.exe', ['/c', dsh.cmd, 'web', …], { detached: true, windowsHide: true, stdio: ['ignore', fd, fd] })`。
+它"看起来"该是独立的，实际在真机上没起来。现场只剩一行证据：
+
+```
+[dsh] 启动中 npm-shim ["cmd.exe","/c","…\\npm\\dsh.cmd","web","--no-open","--port","3080"]
+[dsh] 子进程退出 npm-shim code=3221225786      ← 0xC000013A = STATUS_CONTROL_C_EXIT
 ```
 
-两个细节：
+日志文件里只有一个 `^C`（那是 cmd.exe 收到控制台控制事件时自己回显的），
+服务没打印任何东西就被带走。桌宠是 GUI 进程，`windowsHide` 出来的那个**隐藏控制台**
+是它与子进程共用的 —— 只要有人往那个控制台发 CTRL_C 或者关掉它，整串就一起死。
 
-- **走文件 fd 而不是管道**：管道另一头是父进程，父进程一死管道就断，
-  服务往断掉的 stdout 写会出岔子。文件句柄与父进程死活无关。
+现在改成让 shell 去创建进程（`buildHandoffScript` + `launchDshService`）：
+
+```powershell
+$proc = Start-Process -FilePath 'C:\Program Files\nodejs\node.exe' `
+  -ArgumentList '<dsh>/lib/bin.js','web','--no-open','--port','3080' `
+  -WorkingDirectory '<repo>' -RedirectStandardOutput '<userData>\dsh-web.log' `
+  -RedirectStandardError  '<userData>\dsh-web.err.log' `
+  -WindowStyle Hidden -PassThru
+Write-Output ('DSHLAUNCHPID=' + $proc.Id)
+```
+
+这段脚本以 `-EncodedCommand`（UTF-16LE base64）交给 `powershell.exe`，所以路径里
+有什么怪字符都不用折腾引号。要点：
+
+- **进程有自己的隐藏窗口**，不在桌宠的控制台里；交接器（powershell）秒退，服务照活
+  （实测：服务的父进程已经退出，服务还在监听）。探针第 8 项就是查这件事。
+- **回传 PID**：用来判断"是不是提前死了"，死了就别再傻等满超时（探针第 9 项）。
+- 普通路线**标准输出与错误分开两个文件**：`Start-Process` 不允许两者同文件
+  （实测报 "RedirectStandardOutput and RedirectStandardError are same"）。
+- **脚本路线不重定向**：脚本自己会 `>> 它自己的日志`，我们再接一手就是两边抢同一个文件。
+
+另外两件必须做对的事：
+
+- **环境要摘标记**。`DSH_SHELL` / `DSH_SESSION_ID` / `DSH_WEB_URL` 说的是
+  "我正处在哪个会话里"；对新起的服务是错的（桌宠自己就可能是从某个 DSH 会话里被
+  工具叫起来的）。`dropSessionEnv` 摘掉它们，`DSH_HOME` 保留。
 - **`--no-open`**：浏览器由我们开，这样才能把"起没起来"回报给她；
   顺带"只弹一个浏览器窗口"成为确定行为。
 
-命令解析（`resolveDshCommand`）的顺序：用户配置 → `%APPDATA%\npm\dsh.cmd`
-（实测这台机器上就是它）→ PATH 里的 `dsh.cmd` → `npx --yes @deepseek-ai/dsh`。
-Windows 上 `.cmd/.bat` 必须经 `cmd.exe`，node 的 `spawn` 不能直接执行批处理；
-地址里写了端口就显式带上 `--port`，免得"打开的地址"与"监听的端口"各说各话。
+### 6.7.3.1 拉起的优先级（`resolveLaunchPlan`）
 
-拉起之后轮询到应答为止（默认 30 秒），同时每轮从日志尾巴里捞一次
-`http://…/?token=…`：**只有自己拉起来的这一次能拿到可用 token**，
-拿不到就退回裸地址（浏览器里已经存着 cookie 时照样能用）。
+| 优先级 | 路线 | 什么时候用 |
+| --- | --- | --- |
+| 1 | 用户配置的 `dshCommand` | 非空时；`.bat/.cmd/.ps1/.exe` 视为"启动脚本，原样跑"，否则当成命令并追加 `web --no-open --port` |
+| 2 | **工作空间启动脚本** | 程序目录 / 它的上级目录里有 `Start-DSH-Web-Background.bat(.cmd)`；**地址必须是 DSH 默认端口**（脚本不接受 `--port`，硬用它就会"打开的地址"和"监听的端口"各说各话） |
+| 3a | `node <dsh>/lib/bin.js web …` | 从 npm 全局 shim 推出 bin.js，且 PATH 里有 `node.exe`；不过 `cmd.exe` 就少一层引号与控制台麻烦 |
+| 3b | `cmd /c <dsh.cmd> web …` | 只有 shim 没有 bin.js/node.exe |
+| 3c | `npx --yes @deepseek-ai/dsh web …` | 什么都没找到（最慢，兜底） |
+
+选脚本那条路是**用户指的路**：`Start-DSH-Web-Background.bat` 本来就是这台机器上一直在用的
+launcher（自己检查端口、自己落日志），能用就别自己造。它的日志写在脚本旁边
+（`<脚本目录>\dsh-web.log`），token 地址也在里面 —— 所以 `plan.logPath` 跟着脚本走。
+
+> **踩过的坑：环境变量大小写。** `{...process.env}` 拷成普通对象之后 `env.PATH` 会取到
+> `undefined` —— Windows 环境变量名不分大小写，但 `process.env` 是个大小写不敏感的特例
+> 对象，一拷就没了这个特性（这台机器上拷出来的是 `Path`）。后果是找 `node.exe` 一路失败、
+> 悄悄退化成最慢的 npx。现在统一走 `envGet()`（大小写不敏感），`dropSessionEnv` 也是。
+
+拉起之后轮询到应答为止（默认 60 秒），同时每轮做两件事：从日志尾巴里捞
+`http://…/?token=…`，以及看进程还活着没。
+
+**token 落盘比探活成功晚一拍**（实测 6.5s 能应答、7.4s 才写出 token 行）。
+探活成功后再给它最多 2 秒补齐：不等这一下就会退化成打开裸地址 ——
+浏览器里有 cookie 时看不出区别，没有 cookie 的人打开就是 401。
 旧 token 拿来访问正在跑的服务实测**两个都是 401**，所以不缓存、不猜。
 
 ### 6.7.4 自检一律 dry-run
@@ -700,26 +741,40 @@ Windows 上 `.cmd/.bat` 必须经 `cmd.exe`，node 的 `spawn` 不能直接执�
 任何 `--*-probe` 模式（以及 `--open-dsh-dry`）下只演练、**绝不真的开浏览器** ——
 否则跑一次探针就会往用户桌面上弹一个窗口。
 
-`npm run open-dsh:probe` 的 8 项断言：
+`npm run open-dsh:probe` 的 11 项断言：
 
 | # | 断言 | 怎么测的 |
 | --- | --- | --- |
 | 1 | 地址归一化（空值/裸主机/尾斜杠/token/垃圾值） | 纯函数 |
 | 2 | 从 `dsh web:` 输出里认出**最后一行**带 token 的地址 | 纯函数（带噪音行） |
-| 3 | 启动命令含 `web --no-open --port <地址里的端口>` | 纯函数（win32/linux 两条路径） |
-| 4 | 已经在跑 → `running:true` 且**没有起过进程** | 401 替身服务 + 一个"被真的执行就写文件"的替身命令（只看 `pid` 是空的证明不了没起过） |
-| 5 | 没在跑 → 拉起、等应答、回报 `pid` | 替身进程（`ELECTRON_RUN_AS_NODE`，不依赖机器上装了 node） |
-| 6 | 自己拉起来的这次用日志里的 token 地址打开 | 替身进程往日志里打一行 token 地址 |
-| 7 | 起不来 → 超时 `ok:false`，不假装成功 | 起来就退出的替身命令 |
-| 8 | 点菜单里的「打开DSH」→ 走通预加载/主进程并收起菜单 | 真点 DOM；只改**内存里**的 `config.dshUrl` 指向替身服务（不写盘、不碰用户配置），结果从 `/__shell/state` 读 |
+| 3 | 启动计划四条分支：脚本优先 / 换端口不用脚本 / node+bin.js / npx 兜底 | 纯函数（注入 `exists`/`env` 模拟机器布局） |
+| 4 | 拉起前摘掉 `DSH_SHELL`/`DSH_SESSION_ID`/`DSH_WEB_URL`，保留 `DSH_HOME`/`PATH` | 纯函数 |
+| 5 | 已经在跑 → `running:true` 且**没有起过进程** | 401 替身服务 + 一个"被真的执行就写文件"的替身计划（只看 `pid` 是空的证明不了没起过） |
+| 6 | 没在跑 → 交接起进程、等应答、回报 `pid` | 替身进程（`ELECTRON_RUN_AS_NODE`，不依赖机器上装了 node） |
+| 7 | 自己拉起来的这次用日志里的 token 地址打开 | 替身进程往日志里打一行 token 地址 |
+| 8 | **拉起来的进程不在桌宠的进程树里** | 向 WMI 要它的 `ParentProcessId`，必须 ≠ 本进程（这是"掐不到它"的直接证据） |
+| 9 | 进程起来就退 → 立刻 `error=exited` | 替身进程 10ms 退出；断言耗时远小于超时 |
+| 10 | 活着但一直不应答 → `error=timeout` | 替身进程只挂着不监听 |
+| 11 | 点菜单里的「打开DSH」→ 走通预加载/主进程并收起菜单 | 真点 DOM；只改**内存里**的 `config.dshUrl` 指向替身服务（不写盘、不碰用户配置），结果从 `/__shell/state` 读 |
 
-第 8 项断言的是 `/__shell/state`（HTTP，外部可读的那一份）而不是进程里的变量：
+第 11 项断言的是 `/__shell/state`（HTTP，外部可读的那一份）而不是进程里的变量：
 "菜单项存在"证明不了链路通。另有 `npm run settings:probe` 守着
-设置窗口 →「维护」→「DSH WebUI」那一行（地址可改 + 有「打开」按钮 + 不撑出横向滚动）。
+设置窗口 →「维护」→「DSH WebUI」那一行（地址可改 + 有「打开」按钮 + **写清用哪条路拉起** +
+不撑出横向滚动）。
 
-**真实鼠标**那一步是单独手动验过的（`--standalone` 实例 + `mouse_event`）：
-右键她 → 点第 7 项 → `openDsh` 回 `{ok:true, running:true, dryRun:true, opened:false}`。
-菜单项几何（194x292、8 项）可以直接算，见 `src/main.js` 里 menu-probe 的实测值。
+除探针之外还手工验过两件事（都用一个独立的 `DSH_HOME` + 空闲端口，不动正在跑的会话）：
+
+- **真·冷启动**：`resolveLaunchPlan` → `launchDshService` 拉起真的 `dsh web`，
+  6.5s 就绪、7.4s 拿到 token 地址，进程独立存活。
+- **工作空间脚本那条路**：计划确实选中 `D:\DSWorkspace\Start-DSH-Web-Background.bat`，
+  脚本被真的执行；因为 3080 已被占用，它按自己的逻辑直接退出，正在跑的 DSH 毫发无损。
+- **真实鼠标**：`--standalone` 实例 + `mouse_event`，右键她 → 点那一项 →
+  `openDsh` 回 `{ok:true, running:true, dryRun:true, opened:false}`。
+  菜单项几何（194x292、8 项）可以直接算，见 `src/main.js` 里 menu-probe 的实测值。
+
+> 单独测试冷启动时记得**起完要按端口收**：`taskkill /PID <父> /T /F` 有时会因为父进程先退
+> 而漏掉那个 node 子进程（实测漏过三个），结果下一个用例探活探到的是上一个服务、
+> 看起来"起来了但日志是空的"。收尾按端口来最稳。
 
 ## 7. 调试手段（看不到屏幕时靠这些）
 

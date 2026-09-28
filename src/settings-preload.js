@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('whaleSettings', {
   openLog: () => ipcRenderer.send('shell:open-path', 'log'),
   /** 打开 DSH 网页界面（与右键菜单里那条「打开DSH」同一件事）。 */
   openDsh: () => ipcRenderer.invoke('shell:open-dsh'),
+  /** 「打开DSH」打算怎么把服务拉起来（启动脚本 / dsh CLI / npx），用于那一行的说明文字。 */
+  dshPlan: () => ipcRenderer.invoke('shell:dsh-plan'),
   appInfo: () => ipcRenderer.invoke('shell:app-info'),
   /** 当前模型 + 它对应的单价、价目表信息（只读展示，见 main.js 的 shell:price-info）。 */
   priceInfo: () => ipcRenderer.invoke('shell:price-info'),

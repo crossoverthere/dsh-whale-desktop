@@ -169,6 +169,9 @@
    * 「已经在跑就只开浏览器、没跑就拉起来」的逻辑 —— 与右键菜单里的「打开DSH」
    * 是同一件事，只是这里还能顺手把地址改掉。
    *
+   * 说明文字里写上**这次打算用哪条路把它拉起来**（工作空间启动脚本？dsh CLI？npx？）：
+   * 起不来的原因十有八九是"走的那条路不对"，先把那件事摆出来，再谈排查。
+   *
    * 反馈写在行内的 hint 里（和「测试播报」同一套做法）：这个动作要等好几秒，
    * 没有反馈用户只会以为没点上。
    */
@@ -192,6 +195,24 @@
     input.placeholder = 'http://127.0.0.1:3080';
     input.addEventListener('change', () => applyConfig({ dshUrl: input.value.trim() }));
     input.addEventListener('click', (event) => event.preventDefault());
+
+    /* 拉起方式：只显示"是什么"，完整路径挂在 title 上（长路径会把这一行撑破）。 */
+    async function describePlan() {
+      if (typeof api.dshPlan !== 'function') {
+        return;
+      }
+      try {
+        const plan = await api.dshPlan();
+        // 脚本路线真正执行的是那个脚本（plan.file 只是跑它的 cmd.exe），别显示错了
+        const target = plan.kind === 'script' && plan.script ? plan.script : plan.file;
+        const base = String(target || '').split(/[\\/]/).filter(Boolean).pop() || target;
+        const how = plan.kind === 'script' ? `启动脚本 ${base}` : `dsh CLI（${base}）`;
+        hint.textContent = `已经在跑就只打开浏览器；没跑就用 ${how} 拉起来`;
+        wrap.title = `${plan.file} ${(plan.args || []).join(' ')}\n脚本：${plan.script || '(无)'}\n日志：${plan.logPath}`;
+      } catch (error) {
+        /* 拿不到就保留默认文案 */
+      }
+    }
 
     const opened = actionButton('打开', async () => {
       if (typeof api.openDsh !== 'function') {
@@ -219,6 +240,7 @@
 
     field.append(input, opened);
     wrap.append(text, field);
+    describePlan();
     return wrap;
   }
 

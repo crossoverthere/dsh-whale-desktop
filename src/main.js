@@ -25,12 +25,16 @@ const { UsageLedger } = require('./usage-today');
 const {
   DEFAULT_DSH_URL,
   DEFAULT_BOOT_TIMEOUT_MS,
+  SERVICE_LOG_NAME,
   normalizeUrl,
   resolveDshUrl,
   probeDshWeb,
   extractTokenUrl,
   readTextTail,
-  resolveDshCommand,
+  resolveLaunchPlan,
+  launchDshService,
+  dropSessionEnv,
+  pidAlive,
   waitForDshWeb,
 } = require('./open-dsh');
 
@@ -1413,17 +1417,20 @@ function runSayProbe() {
 
 // ---------------------------------------------------------------- 打开DSH 探针
 /**
- * 「打开DSH」探针。关心四件事：
+ * 「打开DSH」探针。关心这些事：
  *
- *   1) 纯逻辑：地址归一化、token 地址识别、启动命令解析（含端口 / npm shim / npx 兜底）
+ *   1) 纯逻辑：地址归一化、token 地址识别、启动计划（脚本 / dsh CLI / npx + 端口规则）、
+ *      拉起前摘掉"我在某个会话里"的环境变量
  *   2) **已经在跑** → 只开浏览器：不重启、不再拉一个服务（拿 401 的替身服务当"在跑"，
  *      这正是无 cookie 访问真 DSH 的真实表现）
  *   3) **没在跑** → 真的把进程拉起来、等它应答、再打开；替身进程会往日志里写一行
  *      带 token 的地址，用来断言"自己拉起来的这次能拿到可直接打开的地址"
- *   4) **起不来** → 超时返回 ok:false，而不是假装成功
+ *   4) **进程不在桌宠的进程树里**：父进程是那个已经退出的交接器，不是桌宠
+ *      —— 这是"别人按 Ctrl+C 不该杀掉刚拉起来的 DSH"的核心（见 open-dsh.js 顶部）
+ *   5) **起不来** → 要么提前退出立刻报错，要么超时返回 ok:false，绝不假装成功
  *
  * 全程 dry-run：一个浏览器窗口都不会弹（那是用户的桌面，不是测试场地）。
- * 替身命令是 electron 自己的 `ELECTRON_RUN_AS_NODE` 模式 —— 不依赖机器上装了 node。
+ * 替身进程是 electron 自己的 `ELECTRON_RUN_AS_NODE` 模式 —— 不依赖机器上装了 node。
  */
 function runOpenDshProbe() {
   const tmpDir = path.join(ROOT, 'tmp');
@@ -1442,12 +1449,37 @@ function runOpenDshProbe() {
     `require('http').createServer((q,s)=>{s.writeHead(401);s.end('unauthorized')})` +
     `.listen(${port},'127.0.0.1',()=>console.log('dsh web: http://127.0.0.1:${port}/?token=${token}'))`;
 
-  const stubSpec = (script) => ({
+  /** 替身"启动计划"：把 node 脚本当成要拉起来的服务（真正走一遍交接逻辑）。 */
+  const stubPlan = (script, logPath, errPath) => ({
+    kind: 'node',
     source: 'stub',
-    command: process.execPath,
+    file: process.execPath,
     args: ['-e', script],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
+    cwd: tmpDir,
+    logPath,
+    errPath: errPath || null,
+    redirect: true,
+    url: '',
   });
+  const stubEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+
+  /** 问 WMI：某个进程的父进程是谁（用来断言"不在桌宠的进程树里"）。 */
+  const parentOf = (target) =>
+    new Promise((resolve) => {
+      const child = spawn(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(target)}").ParentProcessId`],
+        { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      let out = '';
+      if (child.stdout) {
+        child.stdout.on('data', (chunk) => {
+          out += chunk;
+        });
+      }
+      child.on('error', () => resolve(0));
+      child.on('exit', () => resolve(Number(String(out).trim()) || 0));
+    });
 
   const killStub = (pid) => {
     if (!pid) return;
@@ -1497,21 +1529,80 @@ function runOpenDshProbe() {
         String(extractTokenUrl(tokenLine))
       );
 
-      const cmd = resolveDshCommand({ url: 'http://127.0.0.1:3099', platform: 'win32' });
-      const cmdNix = resolveDshCommand({
+      /*
+       * 启动计划（用注入的 exists/env 模拟这台机器的布局）：
+       *   · 有工作空间启动脚本 + 地址就是默认端口 → 用脚本、原样跑（不追加参数）
+       *   · 地址换了端口 → 不能用脚本（脚本不接受 --port），退回自己拼 dsh 命令
+       *   · 有 bin.js + node.exe → 直接跑 bin.js，不经 cmd.exe
+       *   · 什么都没有 → npx 兜底
+       */
+      const fakeEnv = {
+        APPDATA: 'C:\\Users\\probe\\AppData\\Roaming',
+        PATH: 'C:\\Program Files\\nodejs',
+      };
+      const planScript = resolveLaunchPlan({
         url: DEFAULT_DSH_URL,
-        platform: 'linux',
-        env: { PATH: path.dirname(process.execPath) },
-        exists: (file) => path.basename(file) === 'dsh',
+        platform: 'win32',
+        root: 'C:\\ws\\app',
+        logDir: 'C:\\ws\\app\\data',
+        env: fakeEnv,
+        exists: (file) => /Start-DSH-Web-Background\.(bat|cmd)$/.test(file),
+      });
+      const planPort = resolveLaunchPlan({
+        url: 'http://127.0.0.1:3099',
+        platform: 'win32',
+        root: 'C:\\ws\\app',
+        logDir: 'C:\\ws\\app\\data',
+        env: fakeEnv,
+        exists: (file) => /Start-DSH-Web-Background\.(bat|cmd)$/.test(file),
+      });
+      const planNode = resolveLaunchPlan({
+        url: 'http://127.0.0.1:3099',
+        platform: 'win32',
+        root: 'C:\\ws\\app',
+        logDir: 'C:\\ws\\app\\data',
+        env: fakeEnv,
+        exists: (file) => /dsh\.cmd$/.test(file) || /bin\.js$/.test(file) || /node\.exe$/.test(file),
+      });
+      const planNpx = resolveLaunchPlan({
+        url: 'http://127.0.0.1:3099',
+        platform: 'win32',
+        root: 'C:\\ws\\app',
+        logDir: 'C:\\ws\\app\\data',
+        env: fakeEnv,
+        exists: () => false,
       });
       check(
-        '启动命令：dsh web --no-open 且带上地址里的端口；找不到 dsh 时退回 npx',
-        cmd.args.includes('web') &&
-          cmd.args.includes('--no-open') &&
-          cmd.args.includes('3099') &&
-          cmdNix.args.includes('--no-open') &&
-          cmdNix.command.endsWith('dsh'),
-        JSON.stringify({ win32: cmd, linux: cmdNix })
+        '启动计划：工作空间脚本优先（且原样跑）→ 换端口时不用脚本 → node/bin.js → npx 兜底',
+        planScript.kind === 'script' &&
+          planScript.source === 'workspace-script' &&
+          planScript.args.join(' ').includes('Start-DSH-Web-Background.bat') &&
+          !planScript.args.includes('web') &&
+          planScript.logPath.endsWith(SERVICE_LOG_NAME) &&
+          planPort.kind !== 'script' &&
+          planNode.kind === 'node' &&
+          planNode.args.includes('--port') &&
+          planNode.args.includes('3099') &&
+          planNpx.source === 'npx' &&
+          planNpx.args.includes('--no-open'),
+        JSON.stringify({ script: planScript, port: planPort, node: planNode, npx: planNpx })
+      );
+
+      const cleaned = dropSessionEnv({
+        DSH_SHELL: '1',
+        DSH_SESSION_ID: 'session-x',
+        DSH_WEB_URL: 'http://127.0.0.1:3080',
+        DSH_HOME: 'C:\\Users\\probe\\.dsh',
+        PATH: 'C:\\Windows',
+      });
+      check(
+        '拉起前摘掉"我在某个会话里"的环境变量（DSH_HOME / PATH 保留）',
+        !('DSH_SHELL' in cleaned) &&
+          !('DSH_SESSION_ID' in cleaned) &&
+          !('DSH_WEB_URL' in cleaned) &&
+          cleaned.DSH_HOME === 'C:\\Users\\probe\\.dsh' &&
+          cleaned.PATH === 'C:\\Windows',
+        JSON.stringify(cleaned)
       );
 
       // ---- 2) 已经在跑：只开浏览器，不重启 ----
@@ -1537,8 +1628,12 @@ function runOpenDshProbe() {
         url: `http://127.0.0.1:${livePort}`,
         dryRun: true,
         timeoutMs: 4000,
-        logPath: path.join(tmpDir, 'open-dsh-probe-live.log'),
-        command: stubSpec(`require('fs').writeFileSync(${JSON.stringify(marker)},'spawned')`),
+        env: stubEnv,
+        plan: stubPlan(
+          `require('fs').writeFileSync(${JSON.stringify(marker)},'spawned')`,
+          path.join(tmpDir, 'open-dsh-probe-live.log'),
+          null
+        ),
       });
       await new Promise((resolve) => setTimeout(resolve, 600));
       const spawnedAnyway = fs.existsSync(marker);
@@ -1554,7 +1649,7 @@ function runOpenDshProbe() {
         JSON.stringify({ ...already, spawnedAnyway })
       );
 
-      // ---- 3) 没在跑：拉起来 → 等应答 → 打开（并优先用日志里的 token 地址）----
+      // ---- 3) 没在跑：交接给 shell 起 → 等应答 → 打开（优先用日志里的 token 地址）----
       const bootPort = await freePort();
       const bootLog = path.join(tmpDir, 'open-dsh-probe.log');
       fs.writeFileSync(bootLog, '');
@@ -1562,8 +1657,8 @@ function runOpenDshProbe() {
         url: `http://127.0.0.1:${bootPort}`,
         dryRun: true,
         timeoutMs: 20000,
-        logPath: bootLog,
-        command: stubSpec(stubScript(bootPort, 'PROBEtoken123')),
+        env: stubEnv,
+        plan: stubPlan(stubScript(bootPort, 'PROBEtoken123'), bootLog, null),
       });
       spawned.push(launched.pid);
       check(
@@ -1580,19 +1675,52 @@ function runOpenDshProbe() {
         launched.url === `http://127.0.0.1:${bootPort}/?token=PROBEtoken123`,
         String(launched.url)
       );
+      /*
+       * 这次修复的核心：进程必须**不在桌宠的进程树里**。
+       * 它由 PowerShell 交接器交给 shell 起（交接器自己秒退），所以父进程是那个
+       * 已经退掉的交接器而不是我们 —— 这样任何人都没法用"给我们发 Ctrl+C /
+       * 关掉我们的控制台"来顺手掐死刚起来的 DSH。
+       */
+      const serviceParent = await parentOf(launched.pid);
+      check(
+        '拉起来的进程不在桌宠的进程树里（父进程是交接器，不是桌宠）',
+        launched.pid > 0 && pidAlive(launched.pid) && serviceParent > 0 && serviceParent !== process.pid,
+        `service=${launched.pid} parent=${serviceParent} self=${process.pid} alive=${pidAlive(launched.pid)}`
+      );
 
-      // ---- 4) 起不来：超时报错，不假装成功 ----
+      // ---- 4) 起来了但立刻退出：早死早报错，不等满超时 ----
+      const exitPort = await freePort();
+      const exitStart = Date.now();
+      const exited = await openDshWeb({
+        url: `http://127.0.0.1:${exitPort}`,
+        dryRun: true,
+        timeoutMs: 30000,
+        env: stubEnv,
+        plan: stubPlan('setTimeout(()=>{},10)', path.join(tmpDir, 'open-dsh-probe-exit.log'), null),
+      });
+      spawned.push(exited.pid);
+      const exitElapsed = Date.now() - exitStart;
+      check(
+        '进程起来就退了 → 立刻报 error=exited（不等满 30 秒超时）',
+        exited.ok === false &&
+          exited.error === 'exited' &&
+          exited.opened === false &&
+          exitElapsed < 15000,
+        `error=${exited.error} elapsed=${exitElapsed}ms`
+      );
+
+      // ---- 5) 活着但一直不应答：超时报错，不假装成功 ----
       const deadPort = await freePort();
       const failed = await openDshWeb({
         url: `http://127.0.0.1:${deadPort}`,
         dryRun: true,
         timeoutMs: 2500,
-        logPath: path.join(tmpDir, 'open-dsh-probe-fail.log'),
-        command: stubSpec('setTimeout(()=>{},10)'),
+        env: stubEnv,
+        plan: stubPlan('setInterval(()=>{},1000)', path.join(tmpDir, 'open-dsh-probe-fail.log'), null),
       });
       spawned.push(failed.pid);
       check(
-        '起不来（超时）：ok:false + error=timeout，且没有假装打开',
+        '活着但一直不应答（超时）：ok:false + error=timeout，且没有假装打开',
         failed.ok === false && failed.error === 'timeout' && failed.opened === false && failed.started === true,
         JSON.stringify(failed)
       );
@@ -1688,7 +1816,7 @@ function runOpenDshProbe() {
     }
 
     const failed = results.filter((r) => !r.ok).length;
-    const expected = 8;
+    const expected = 11;
     log(
       '[open-dsh-probe]',
       results.length !== expected
@@ -1861,13 +1989,14 @@ function runSettingsProbe() {
           };
         })()`);
         check(
-          '「DSH WebUI」行：地址可改 + 有「打开」按钮，且不撑出横向滚动',
+          '「DSH WebUI」行：地址可改 + 有「打开」按钮 + 写清用哪条路拉起，且不撑出横向滚动',
           dshUi.found &&
             dshUi.visible &&
             typeof dshUi.inputValue === 'string' &&
             dshUi.inputValue.startsWith('http') &&
             dshUi.button === '打开' &&
             dshUi.hint.length > 0 &&
+            /(启动脚本|dsh CLI)/.test(dshUi.hint) &&
             dshUi.rowOverflow <= 0 &&
             dshUi.bodyOverflow <= 0,
           JSON.stringify(dshUi)
@@ -2208,7 +2337,7 @@ function scheduleShot() {
 
 /** 拉起来的 DSH 输出写这里（token 地址也在这里，排查时直接看）。 */
 function dshWebLogFile() {
-  return path.join(app.getPath('userData'), 'dsh-web.log');
+  return path.join(app.getPath('userData'), SERVICE_LOG_NAME);
 }
 
 /** 正在进行中的那一次「打开DSH」：连点两下不该拉起两个服务。 */
@@ -2236,41 +2365,51 @@ async function openExternalSafe(url, dryRun) {
 }
 
 /**
- * detached 起进程：桌宠退出后 DSH 要活着，所以 detached + unref。
- *
- * 输出直接接到日志文件的 fd 上（而不是管道）：父进程一旦退出，管道那一头就断了，
- * 服务往断掉的 stdout 写会出岔子。交给文件句柄则与父进程死活无关。
+ * 写日志用的"这次打算怎么起"摘要（也交给设置窗口展示，省得靠猜）。
+ * 只放能给人看的东西：起什么、带什么参数、日志在哪。
  */
-function spawnDshWeb(spec, logPath) {
-  let fd = null;
+function planSummary(plan) {
+  return {
+    kind: plan.kind,
+    source: plan.source,
+    file: plan.file,
+    args: plan.args,
+    script: plan.script || null,
+    cwd: plan.cwd,
+    logPath: plan.logPath,
+  };
+}
+
+/** 启动失败时把服务自己的日志尾巴带出来 —— 别再让人猜"为什么没起来"。 */
+function serviceLogTail(plan, max = 400) {
+  const text = `${readTextTail(plan.logPath, 4000)}${plan.errPath ? readTextTail(plan.errPath, 4000) : ''}`.trim();
+  return text.length > max ? text.slice(-max) : text;
+}
+
+/**
+ * 当前「打开DSH」会走的启动计划。
+ *
+ * 设置窗口拿它显示"这次用哪条路"，`/__shell/state` 也带一份 —— 出问题时
+ * 第一件事就是看"它到底打算怎么起"，而不是猜。
+ */
+function currentDshPlan() {
   try {
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    fd = fs.openSync(logPath, 'a');
-    const child = spawn(spec.command, spec.args, {
-      cwd: spec.cwd || ROOT,
-      detached: true,
-      windowsHide: true,
-      stdio: ['ignore', fd, fd],
-      env: { ...process.env, ...(spec.env || {}) },
+    return resolveLaunchPlan({
+      url: resolveDshUrl({ configured: config.dshUrl }),
+      override: config.dshCommand,
+      root: ROOT,
+      logDir: app.getPath('userData'),
+      env: process.env,
     });
-    child.on('error', (error) => log('[dsh] 子进程错误', spec.source, error.message));
-    child.on('exit', (code, signal) => log('[dsh] 子进程退出', spec.source, 'code=' + code, 'signal=' + signal));
-    child.unref();
-    return child;
   } catch (error) {
-    log('[dsh] 启动失败', spec.source, error.message);
-    return null;
-  } finally {
-    if (fd !== null) {
-      fs.closeSync(fd);
-    }
+    return { kind: 'unknown', source: 'error', file: '', args: [], cwd: '', logPath: null, errPath: null };
   }
 }
 
 /**
  * 打开 DSH。返回 { ok, url, running, started, pid?, opened, dryRun, source, error }。
  *
- * `options` 是给探针用的替身入口（url / command / probe / timeoutMs / logPath / dryRun）：
+ * `options` 是给探针用的替身入口（url / plan / probe / timeoutMs / dryRun / env）：
  * 不注入任何东西时就是真实行为。
  */
 async function openDshWeb(options = {}) {
@@ -2278,7 +2417,6 @@ async function openDshWeb(options = {}) {
   const dryRun = options.dryRun === undefined ? OPEN_DSH_DRY : Boolean(options.dryRun);
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : DEFAULT_BOOT_TIMEOUT_MS;
   const probe = typeof options.probe === 'function' ? options.probe : (target) => probeDshWeb(target);
-  const logPath = options.logPath || dshWebLogFile();
 
   // 1) 已经在跑 —— 只开浏览器
   if (await probe(url)) {
@@ -2289,47 +2427,87 @@ async function openDshWeb(options = {}) {
     });
   }
 
-  // 2) 没在跑 —— 拉起来，等它应答，再开浏览器
-  const spec = options.command || resolveDshCommand({ url, override: config.dshCommand });
-  log('[dsh] 启动中', spec.source, JSON.stringify([spec.command, ...spec.args]), '→', logPath);
-  const child = spawnDshWeb(spec, logPath);
-  if (!child) {
+  /*
+   * 2) 没在跑 —— 拉起来，等它应答，再开浏览器。
+   *
+   * 关键：进程交给 **shell** 起（PowerShell 的 Start-Process -WindowStyle Hidden），
+   * 不挂在我们自己的进程树/隐藏控制台上。直接 spawn 的那一版实测死得很莫名：
+   * 日志里只有一个 `^C`、退出码 0xC000013A（STATUS_CONTROL_C_EXIT），
+   * 服务根本没起来就被带走了。
+   */
+  const plan = options.plan || resolveLaunchPlan({
+    url,
+    override: config.dshCommand,
+    root: ROOT,
+    logDir: app.getPath('userData'),
+    env: process.env,
+  });
+  log('[dsh] 启动计划', plan.kind + '/' + plan.source, JSON.stringify([plan.file, ...(plan.args || [])]), '→ 日志', plan.logPath);
+
+  const launched = await launchDshService({
+    plan,
+    env: options.env || process.env,
+    platform: options.platform,
+    spawnImpl: options.spawnImpl,
+  });
+  if (!launched.ok) {
+    log('[dsh] 交接失败', launched.error, launched.detail || '');
     return rememberOpenDsh({
       ok: false, url, running: false, started: false, opened: false, dryRun,
-      source: spec.source, error: 'spawn-failed', logPath,
+      source: plan.source, error: launched.error, detail: launched.detail || null, plan: planSummary(plan),
     });
   }
+  log('[dsh] 已交接给 shell', 'via', launched.via, 'pid', launched.pid);
 
   let tokenUrl = null;
+  let died = false;
   const ready = await waitForDshWeb({
     url,
     timeoutMs,
     probe,
-    // 起来之前顺手从日志里捞 token 地址：服务每次启动都换 token，只有自己拉起来的这次拿得到
+    /*
+     * 起来之前每轮顺手做两件事：
+     *   1) 从日志里捞 token 地址（每次启动都换 token，只有自己拉起来的这次拿得到）
+     *   2) 看进程还活着没 —— 提前死了就别再傻等满超时
+     */
     onTick: () => {
       if (!tokenUrl) {
-        tokenUrl = extractTokenUrl(readTextTail(logPath));
+        tokenUrl = extractTokenUrl(readTextTail(plan.logPath)) || extractTokenUrl(readTextTail(plan.errPath));
+      }
+      if (!died && launched.pid && !pidAlive(launched.pid)) {
+        died = true;
       }
     },
+    shouldStop: () => died,
   });
   if (!tokenUrl) {
-    tokenUrl = extractTokenUrl(readTextTail(logPath));
+    tokenUrl = extractTokenUrl(readTextTail(plan.logPath)) || extractTokenUrl(readTextTail(plan.errPath));
+  }
+  /*
+   * 探活成功与"token 那一行落进日志"之间有一拍的时间差（实测就差点漏掉）——
+   * 不等这一下，就会退化成打开不带 token 的裸地址：浏览器里有 cookie 时看不出区别，
+   * 没有 cookie 的人一打开就是 401。给它最多 2 秒。
+   */
+  for (let i = 0; !tokenUrl && i < 10; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    tokenUrl = extractTokenUrl(readTextTail(plan.logPath)) || extractTokenUrl(readTextTail(plan.errPath));
   }
 
   if (!ready) {
-    log('[dsh] 启动超时', timeoutMs + 'ms', 'pid', child.pid, '→ 看', logPath);
+    const tail = serviceLogTail(plan);
+    log('[dsh] 启动失败', died ? '进程提前退出' : '超时', timeoutMs + 'ms', 'pid', launched.pid, '日志:', tail || '(空)');
     return rememberOpenDsh({
-      ok: false, url, running: false, started: true, pid: child.pid, opened: false, dryRun,
-      source: spec.source, error: 'timeout', logPath,
+      ok: false, url, running: false, started: true, pid: launched.pid, opened: false, dryRun,
+      source: plan.source, error: died ? 'exited' : 'timeout', logTail: tail, plan: planSummary(plan),
     });
   }
 
   const target = tokenUrl || url;
   const opened = await openExternalSafe(target, dryRun);
-  log('[dsh] 已启动', 'pid', child.pid, '打开', target);
+  log('[dsh] 已启动', 'pid', launched.pid, '打开', target);
   return rememberOpenDsh({
-    ok: true, url: target, baseUrl: normalizeUrl(url), running: false, started: true, pid: child.pid,
-    opened, dryRun, source: spec.source, error: null, logPath,
+    ok: true, url: target, baseUrl: normalizeUrl(url), running: false, started: true, pid: launched.pid,
+    opened, dryRun, source: plan.source, error: null, plan: planSummary(plan),
   });
 }
 
@@ -2467,6 +2645,16 @@ function registerIpc() {
     }
     return openDshPending;
   });
+  /**
+   * 「打开DSH」现在打算怎么起：设置窗口→维护→DSH WebUI 那一行展示它。
+   *
+   * 展示它是刻意的：起不来的原因十有八九是"用的是哪条路"没暴露出来
+   * （工作空间启动脚本？npm 里的 dsh？npx？），先让人看见，再谈排查。
+   */
+  ipcMain.handle('shell:dsh-plan', () => {
+    const url = resolveDshUrl({ configured: config.dshUrl });
+    return { url, ...planSummary(currentDshPlan()) };
+  });
   /** 设置窗口的"测试播报"按钮：直接让她说一句，用来确认钩子在真实环境里可用。 */
   ipcMain.handle('shell:say', async (_event, text, holdMs) => {
     const sample = { inputTokens: 352, cacheReadTokens: 1540992, outputTokens: 5164 };
@@ -2564,6 +2752,7 @@ if (!PROBE_MODE && !app.requestSingleInstanceLock()) {
           dsh: dshWatcher ? dshWatcher.snapshot() : null,
           lastDshState,
           openDsh: shellState.openDsh || null,
+          openDshPlan: planSummary(currentDshPlan()),
           updatedAt: shellState.updatedAt,
           cursor: screen.getCursorScreenPoint(),
           workArea: screen.getPrimaryDisplay().workArea,
