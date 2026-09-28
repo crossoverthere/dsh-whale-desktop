@@ -21,6 +21,10 @@
 > 也不需要浏览器标签页。DSH 那边的插件可以照常装着，两者互不干扰。
 > 工作状态联动是**只读** DSH 的会话文件（`~/.dsh/sessions/**`），不往 DSH 里装任何东西。
 
+> **要接手维护它？先读 [`docs/HANDOVER.md`](docs/HANDOVER.md)**：现状一页纸、铁律、
+> 自检矩阵、环境事实、踩过的坑、常见维护动作（加菜单项 / 加设置项 / 发版 / 重启实例）
+> 都在那里。**"为什么是这样设计"**看 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)。
+
 ---
 
 ## 快速开始
@@ -212,11 +216,16 @@ dsh-whale-desktop/
 ├─ scripts/
 │  ├─ sync-upstream.mjs    从上游 tag 同步素材
 │  ├─ check-vendor.mjs     素材完整性校验
-│  ├─ verify-shell.ps1     点击穿透自动化验证
+│  ├─ verify-shell.ps1     点击穿透自动化验证（真鼠标）
+│  ├─ open-dsh-e2e.ps1     「打开DSH」端到端（真鼠标点菜单项，隔离 DSH_HOME）
+│  ├─ cold-start-check.mjs 真机冷启动 dsh web（独立 DSH_HOME + 空闲端口）
+│  ├─ check-desktop-input.ps1  这套环境能不能驱动鼠标（真鼠标类脚本的前置检查）
 │  ├─ test-cost.mjs        计价 / 账本 / 价目表单测（npm run test:cost）
 │  ├─ refresh-prices.mjs   刷新价目表（npm run refresh:prices）
 │  └─ push.ps1             走代理推送
-└─ docs/DEVELOPMENT.md     架构细节与调试方法
+└─ docs/
+   ├─ HANDOVER.md          **接手维护先看这份**（现状/铁律/自检/环境/坑）
+   └─ DEVELOPMENT.md       架构细节与调试方法
 ```
 
 上游素材**一个字都没改**——这是刻意的，见 `docs/DEVELOPMENT.md` 里"为什么不需要改上游"。
@@ -255,12 +264,23 @@ node node_modules/electron/install.js
   让 DSH 重启一次会打印带 token 的地址，用它打开一次就能重新拿到 cookie；
   桌宠**不会**替你重启（那会打断你正在聊的会话）。
 
+**真鼠标的验证脚本（`verify:shell` / `e2e:open-dsh`）不是"过时不过"**
+它们会真的移动系统指针；锁屏 / RDP 断开 / 快速用户切换时 `SetCursorPos` 会被拒，
+表现就是"鼠标移不到她身上"。先跑前置检查看退出码：
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-desktop-input.ps1
+```
+
+退出码 `0` = 能驱动（可以跑那两条），`3` = 环境不可驱动（只跑无头探针，并在结论里写明）。
+无头探针（`test:cost` / `open-dsh:probe` / `settings:probe` / `menu:probe` 等）不受影响。
+
 **`git push` 报 `Recv failure: Connection was reset`**
 这台机器上 GitHub 的 API 与 codeload 都直连正常，但 git 的 **push 端点**
 （`git-receive-pack`）会被重置。用仓库自带的推送助手：
 
 ```bash
-pwsh -File scripts/push.ps1        # 检测到本机 Clash 代理就自动走代理
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push.ps1   # 检测到本机 Clash 代理就自动走代理
 ```
 
 它只对本次命令生效，不写进 git 全局配置。也可以手动：

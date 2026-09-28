@@ -6,9 +6,12 @@
 # 而走本机 Clash 代理（mixed-port 7890）即可正常推送。
 #
 # 用法:
-#   pwsh -File scripts/push.ps1                 # 推到 origin/main
-#   pwsh -File scripts/push.ps1 -Branch dev
-#   pwsh -File scripts/push.ps1 -NoProxy        # 强制直连
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push.ps1                 # 推到 origin/main
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push.ps1 -Branch dev
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push.ps1 -NoProxy        # 强制直连
+#
+# 注意：**退出码不可信**。git 的进度输出走 stderr，PowerShell 会把它当错误，
+# 于是推成功了也可能 exit 1。以 `git ls-remote origin refs/heads/main` 的 SHA 为准。
 
 param(
   [string]$Remote = 'origin',

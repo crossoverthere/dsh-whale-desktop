@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.2] - 2026-09-28
+
+### 新增：交接文档 + 三条"更接近真实使用"的验证脚本
+
+项目要交给别的对话维护了，所以这次补的不是功能，而是**接手所需的东西**：
+
+- **[`docs/HANDOVER.md`](docs/HANDOVER.md)** —— 现状一页纸（版本/远端/常驻实例/端口/目录）、
+  **铁律**（不许改 `vendor/whale/`、不许重启正在跑的 DSH、别用 PowerShell 改仓库文本、
+  `.ps1` 的 BOM、改断言要同步 `expected` 计数、探针不许有副作用）、自检矩阵（含每条的
+  期望输出与"哪两条需要可驱动的桌面"）、代码地图、数据与接口清单（config 键 / IPC 通道 /
+  HTTP 路由 / localStorage 键 / 日志文件）、**这台机器的环境事实**（重启常驻实例的 WMI 做法、
+  `restart-dsh-web.ps1` 会顺带杀掉桌宠拉起来的 DSH、push 助手退出码不可信）、
+  血泪坑清单（16 条"现象 → 根因 → 规矩"）、常见维护动作（加菜单项 / 加设置项 / 加探针 /
+  改价目表 / 发版）、已知限制与待办，以及一份"开工前逐条打勾"的检查单。
+- `npm run e2e:open-dsh`（`scripts/open-dsh-e2e.ps1`）—— 用**真鼠标**跑用户报的那个场景：
+  把 `dshUrl` 临时指向空闲端口 → 右键她 → 点「打开DSH」→ 断言服务真的起来、端口归属就是
+  它回报的 pid。用独立 `DSH_HOME`，跑前备份并跑后还原 `config.json`。
+- `npm run cold:start`（`scripts/cold-start-check.mjs`）—— 真机冷启动 `dsh web`
+  （独立 `DSH_HOME` + 空闲端口），打印走哪条路、几秒就绪、token 几秒出现，跑完按端口收拾。
+- `scripts/check-desktop-input.ps1` —— **前置检查**：`SetCursorPos` 能不能用。
+  真鼠标那两条脚本在锁屏 / 无活动输入桌面时会被系统拒绝，这个检查用退出码 `0/3` 区分
+  "能跑"与"是环境不是代码"；两条脚本现在也会先自检并 `SKIP`，而不是给一个看不懂的 FAIL。
+
+### 修复：文档里一条照抄会失败的命令
+
+README 让用户跑 `pwsh -File scripts/push.ps1`，但这台机器上**没有 pwsh 7**（只有
+PowerShell 5.1），照抄会报"无法识别 pwsh"。已改成可直接使用的
+`powershell -NoProfile -ExecutionPolicy Bypass -File …`，并把"push 助手退出码不可信
+（git 的进度输出走 stderr，推成功了也可能 exit 1，以 `git ls-remote` 的 SHA 为准）"
+写进脚本头部与交接文档。
+
 ## [0.12.1] - 2026-09-28
 
 ### 修复：DSH 没在跑时「打开DSH」拉不起来
