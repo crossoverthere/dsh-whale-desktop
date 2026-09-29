@@ -23,7 +23,9 @@
 
 > **要接手维护它？先读 [`docs/HANDOVER.md`](docs/HANDOVER.md)**：现状一页纸、铁律、
 > 自检矩阵、环境事实、踩过的坑、常见维护动作（加菜单项 / 加设置项 / 发版 / 重启实例）
-> 都在那里。**"为什么是这样设计"**看 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)。
+> 都在那里。**"为什么是这样设计"**看 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)；
+> **"整体长什么样"**看 [`docs/ARCHITECTURE-DIAGRAM.md`](docs/ARCHITECTURE-DIAGRAM.md)
+> （带排版版本：[`ARCHITECTURE-DIAGRAM.html`](docs/ARCHITECTURE-DIAGRAM.html)）。
 
 ---
 
@@ -225,7 +227,9 @@ dsh-whale-desktop/
 │  └─ push.ps1             走代理推送
 └─ docs/
    ├─ HANDOVER.md          **接手维护先看这份**（现状/铁律/自检/环境/坑）
-   └─ DEVELOPMENT.md       架构细节与调试方法
+   ├─ DEVELOPMENT.md       架构细节与调试方法
+   ├─ ARCHITECTURE-DIAGRAM.md    一页看完的**项目框架图**（拓扑/数据流/职责/自检）
+   └─ ARCHITECTURE-DIAGRAM.html  同一份框架图的**带排版版本**（浏览器打开）
 ```
 
 上游素材**一个字都没改**——这是刻意的，见 `docs/DEVELOPMENT.md` 里"为什么不需要改上游"。

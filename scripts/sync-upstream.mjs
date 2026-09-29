@@ -82,6 +82,47 @@ function extractTarGz(gzipped, destDir, stripComponents) {
   return written;
 }
 
+/**
+ * 读现有的 vendor/upstream.json（不存在或坏了都当空对象）。
+ *
+ * 存在的意义是"保住同步脚本重建不出来的字段"：`method`（首次 vendor 的来源与方式）、
+ * `packageVersion`。它们只有人知道，脚本一覆盖就没了。
+ */
+function readMeta() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(META, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 写 vendor/upstream.json —— **合并**，不是覆盖。
+ *
+ * 早先这里直接写 `{upstream, tag, syncedAt}`，跑一次同步就把首次 vendor 留下的
+ * `method` / `packageVersion` 抹掉了：不影响运行，但把"素材怎么来的"这段溯源证据丢了。
+ * 那两项脚本没有能力重建（它不知道历史），所以只能继承。
+ */
+function writeMeta(patch) {
+  const meta = readMeta();
+  fs.mkdirSync(path.dirname(META), { recursive: true });
+  fs.writeFileSync(
+    META,
+    `${JSON.stringify(
+      {
+        ...meta,
+        upstream: UPSTREAM,
+        ...patch,
+        syncedAt: new Date().toISOString(),
+        note: meta.note || '后续请用 npm run sync:upstream 更新，不要再手工复制',
+      },
+      null,
+      2
+    )}\n`
+  );
+}
+
 async function resolveTag(explicit) {
   if (explicit) return explicit;
   const body = await request(`https://api.github.com/repos/${UPSTREAM}/releases/latest`);
@@ -102,6 +143,8 @@ async function main() {
     fs.rmSync(VENDOR, { recursive: true, force: true });
     fs.mkdirSync(VENDOR, { recursive: true });
     fs.cpSync(local, VENDOR, { recursive: true });
+    // 来源写在 patch 里而不是覆盖 method：历史那条"首次 vendor"的记录要留着
+    writeMeta({ tag: readMeta().tag || 'unknown', source: 'from-local' });
     console.log(`[sync] 已从本地插件目录同步 -> ${VENDOR}`);
     return;
   }
@@ -124,10 +167,7 @@ async function main() {
     if (fs.existsSync(license)) fs.copyFileSync(license, path.join(VENDOR, 'LICENSE'));
 
     fs.mkdirSync(path.dirname(META), { recursive: true });
-    fs.writeFileSync(
-      META,
-      `${JSON.stringify({ upstream: UPSTREAM, tag, syncedAt: new Date().toISOString() }, null, 2)}\n`
-    );
+    writeMeta({ tag, source: 'codeload' });
     console.log(`[sync] 完成 -> ${VENDOR}`);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

@@ -2,6 +2,86 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.3] - 2026-09-29
+
+### 修复：同步上游会把 `vendor/upstream.json` 的溯源字段抹掉
+
+`scripts/sync-upstream.mjs` 收尾时直接写了一个只含三个键的新对象：
+
+```js
+JSON.stringify({ upstream: UPSTREAM, tag, syncedAt: new Date().toISOString() }, null, 2)
+```
+
+于是 `method`（"首次 vendor 于 2026-09-27，来源为本机已安装的 npm 包 …"）与
+`packageVersion` 会被**覆盖掉** —— 这两项同步脚本没有能力重建（它不知道历史），
+只有第一次 vendor 的人写得出来。**不影响运行**（没有任何代码读这两个键，
+`check-vendor.mjs` 只读 `tag`），但它把"素材怎么来的"这段证据丢了，
+而这类证据一旦丢掉就再也补不回来。
+
+改成 `readMeta()` + `writeMeta(patch)` **合并写**；顺带补齐一处不对称：
+走 `--from-local` 那条路原先**根本不写**这个文件，现在也写（并记 `source: 'from-local'`）。
+
+实测（用真实文件跑合并逻辑，未改动仓库数据）：
+
+```
+keys: upstream,tag,packageVersion,method,note,source,syncedAt
+method kept: YES      packageVersion kept: 2.1.0
+```
+
+### 修复：两处文档与实际不符
+
+- **`docs/HANDOVER.md` 的版本号**写 `0.12.1`（实际 `0.12.2`）—— 它自己在同一行提醒
+  "一切以 `package.json` 为准"，那就先把这一行改对。
+- **`docs/HANDOVER.md` 代码地图的行数**写 `main.js 2628 行` / `shell.js 819 行`，
+  实际是 **2847 / 903**（`git show HEAD:<file>` 与按 LF 字节计数两个来源一致，工作区是 LF）。
+- **`docs/DEVELOPMENT.md` 4.9 节**表格写设置窗口"分 4 类"，实际是 **6 个** `data-panel`
+  （看板娘 / 窗口与状态 / 大小与位置 / 维护 / 天气与余额 / 花费播报）——
+  README 与 HANDOVER 写的 6 类一直是对的。
+
+> 附带记一条教训：**别用 `Get-Content <file>).Count` 数这个仓库的行数**。
+> 它在本机把 `main.js` 报成 2628、`shell.js` 报成 819 —— 恰好与 HANDOVER 里那两个过时数字相同，
+> 一度让人得出"文档漂移、我的数据才对"的相反结论。以 `git show HEAD:<file>` 或 LF 字节计数为准。
+
+### 新增：`docs/ARCHITECTURE-DIAGRAM.{md,html}` 项目框架图
+
+接着手需要的"整体长什么样"：四层拓扑（主进程 / 三个同源渲染文档 / 本地服务器 / 上游素材）、
+点击穿透为什么必须靠主进程轮询光标、三条数据流（DSH 状态联动 / 花费播报与今日账本 / 「打开DSH」启动决策树）、
+入口职责划分、上游契约层（`DshWhaleMoeCore` 与 `__dshWhaleMoe*` 钩子、DOM data 属性、两条 stopPropagation 依赖）、
+启动时序、自检矩阵、维护地图、铁律。`.md` 版含 ASCII 拓扑图，`.html` 版是带排版的同一份内容。
+两份都是**只读文档**，不参与运行、不被代码引用。
+
+### 文档：HANDOVER 补两节"接手时会被咬到的环境事实"
+
+都是这次交接实测撞出来的，不是代码问题，但会让人误判成项目坏了：
+
+- **3.6 节：跑探针前先确认 `ELECTRON_RUN_AS_NODE` 没被设上。**
+  在 DSH 会话里它是 `1`，于是 `electron.exe .` 被当成**纯 Node** 跑，
+  探针直接死在 `src/main.js:60 app.setName`；重定向输出时表现为**空文件 + exit 1**，
+  极易误判成"探针没跑"。清掉即可：`cmd /c "set ELECTRON_RUN_AS_NODE=&& …"`。
+  同节也记了"常驻实例占着热键，探针日志里 `[shortcut] register failed Alt+Shift+W` 是正常的"。
+- **3.7 节：0.12.3 的实测底账**（见下），以及 `dsh:probe` 里 `tool/write` 那一步的立绘
+  仍是上一步的 `work-slack-phone` —— 那是探针注释里已写明的 goneHold 消抖，不是姿势映射坏了
+  （同一次运行 `tool/grep → work-idea` 是对的）。要收紧断言就把 `HOLD_MS` 提到 6000 以上。
+- 第 6 节环境事实补一条：文件策略为 workspace-write 时，本工作区上**所有** pwsh 命令都会
+  以 `SetNamedSecurityInfoW failed (Win32 5): grantWrite(D:\DSWorkspace)` 失败（连 `Write-Output hi` 都不例外）。
+
+### 验证（0.12.3，全部真跑过）
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm run test:cost` | **33/33 PASS** |
+| `npm run check:vendor` | **OK** — 4 个文件 + 92 张立绘（上游 v2.1.0） |
+| `npm run open-dsh:probe` | **11/11 PASS**（全程 dry-run，未往桌面弹浏览器） |
+| `npm run settings:probe` | **20/20 PASS**（`darkRatio=0.0528`） |
+| `npm run growth:probe` | **20/20 PASS** |
+| `npm run say:probe` | **8/8 PASS** |
+| `npm run menu:probe` | **PASS** — 菜单 194×292、8 项、四向溢出全 0 |
+| `npm run dsh:probe` | 跑完（该探针无 PASS/FAIL 计数） |
+| `node --check scripts/sync-upstream.mjs` | 通过（改动后复核） |
+
+**没跑的两条**：`verify:shell` 与 `e2e:open-dsh` —— 它们会**真的移动系统指针**，
+按 3.2/3.3 节先看 `scripts/check-desktop-input.ps1` 的退出码再决定，留待桌面空闲时补。
+
 ## [0.12.2] - 2026-09-28
 
 ### 新增：交接文档 + 三条"更接近真实使用"的验证脚本

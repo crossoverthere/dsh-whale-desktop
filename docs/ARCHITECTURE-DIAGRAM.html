@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dsh-whale-desktop · 项目框架图</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2b3441;
+    --txt:#e6edf3; --dim:#9aa7b4; --faint:#6e7d8c;
+    --whale:#4aa8ff; --whale-dim:#1f4b73;
+    --main:#f0883e; --render:#a371f7; --up:#3fb950; --disk:#e3b341; --net:#f85149;
+    --mono:ui-monospace,SFMono-Regular,Consolas,"Cascadia Mono","Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:32px 20px 80px; background:var(--bg); color:var(--txt);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    font-size:14px; line-height:1.65;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px}
+  h1 small{font-size:13px;color:var(--faint);font-weight:400;letter-spacing:0}
+  h2{
+    font-size:17px;margin:44px 0 14px;padding-bottom:8px;
+    border-bottom:1px solid var(--line);
+  }
+  h2 .n{
+    display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;
+    background:var(--whale-dim);color:#cfe8ff;border-radius:5px;font-size:13px;
+    margin-right:10px;font-family:var(--mono)
+  }
+  h3{font-size:14px;margin:22px 0 8px;color:#cbd5e1}
+  p{margin:8px 0}
+  .sub{color:var(--dim);font-size:13px}
+  code,kbd{font-family:var(--mono);font-size:12.5px}
+  code{background:#0b1017;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:#9fd2ff}
+  .lead{color:var(--dim);max-width:900px}
+
+  /* ---------- meta strip ---------- */
+  .meta{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0}
+  .chip{
+    background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:12.5px;color:var(--dim)
+  }
+  .chip b{color:var(--txt);font-family:var(--mono);font-weight:600}
+  .chip.ok b{color:var(--up)}
+  .chip.warn b{color:var(--disk)}
+
+  /* ---------- generic box ---------- */
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:900px){.grid2,.grid3{grid-template-columns:1fr}}
+
+  /* ---------- layer diagram ---------- */
+  .layer{
+    border:1px solid var(--line);border-radius:10px;background:var(--panel);
+    margin:0 0 0;padding:0;overflow:hidden
+  }
+  .layer>.head{
+    display:flex;align-items:baseline;gap:12px;
+    padding:9px 16px;background:var(--panel2);border-bottom:1px solid var(--line)
+  }
+  .layer>.head b{font-size:13.5px;letter-spacing:.4px}
+  .layer>.head span{font-size:12px;color:var(--faint);font-family:var(--mono)}
+  .layer>.body{padding:14px 16px}
+  .l-main{border-left:3px solid var(--main)}
+  .l-srv{border-left:3px solid var(--whale)}
+  .l-render{border-left:3px solid var(--render)}
+  .l-up{border-left:3px solid var(--up)}
+  .l-disk{border-left:3px solid var(--disk)}
+  .l-host{border-left:3px solid var(--net)}
+  .arrowrow{
+    text-align:center;color:var(--faint);font-family:var(--mono);font-size:12px;
+    padding:7px 0;letter-spacing:1px
+  }
+  .arrowrow b{color:var(--whale)}
+
+  /* ---------- node cards ---------- */
+  .nodes{display:grid;gap:10px}
+  .n3{grid-template-columns:repeat(3,1fr)}
+  .n4{grid-template-columns:repeat(4,1fr)}
+  .n2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:900px){.n3,.n4{grid-template-columns:1fr 1fr}}
+  @media(max-width:620px){.n3,.n4,.n2{grid-template-columns:1fr}}
+  .node{
+    background:#0f151d;border:1px solid var(--line);border-radius:7px;padding:10px 12px;
+    font-size:12.5px
+  }
+  .node .t{font-family:var(--mono);color:#9fd2ff;font-size:12.5px;word-break:break-all}
+  .node .d{color:var(--dim);margin-top:4px;font-size:12px;line-height:1.5}
+  .node .ln{color:var(--faint);font-family:var(--mono);font-size:11.5px;margin-top:5px}
+  .node.hi{border-color:var(--whale-dim);background:#101b26}
+  .node.warn{border-color:#5c4a1a;background:#1a1710}
+  .node.good{border-color:#1f4f2a;background:#0f1a12}
+
+  /* ---------- tables ---------- */
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:12.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cbd5e1;font-weight:600}
+  td code{font-size:12px}
+  tr:nth-child(even) td{background:#12181f}
+  .tbl-tight td,.tbl-tight th{padding:5px 8px}
+
+  /* ---------- flow ---------- */
+  .flow{display:flex;flex-direction:column;gap:0}
+  .step{display:grid;grid-template-columns:150px 1fr;gap:12px;align-items:start;
+        padding:9px 0;border-bottom:1px dashed #212a34}
+  .step:last-child{border-bottom:none}
+  .step .k{font-family:var(--mono);font-size:12px;color:var(--whale);padding-top:1px}
+  .step .v{font-size:12.5px;color:var(--dim)}
+  .step .v b{color:var(--txt);font-weight:600}
+
+  .pill{display:inline-block;border-radius:20px;padding:1px 9px;font-size:11.5px;
+        font-family:var(--mono);border:1px solid var(--line);color:var(--dim)}
+  .pill.m{color:#ffc98b;border-color:#5c3f1a}
+  .pill.r{color:#d0b3ff;border-color:#432c63}
+  .pill.u{color:#a5e8b6;border-color:#1f4f2a}
+  .pill.d{color:#f0d78c;border-color:#5c4a1a}
+
+  ul{margin:8px 0 8px 0;padding-left:22px}
+  li{margin:4px 0;color:var(--dim);font-size:12.5px}
+  li b{color:var(--txt)}
+  .note{
+    border-left:3px solid var(--disk);background:#1a1710;padding:10px 14px;
+    border-radius:0 6px 6px 0;margin:14px 0;font-size:12.5px;color:#e8dcc0
+  }
+  .note.red{border-color:var(--net);background:#1d1213;color:#ffd9d6}
+  .note b{color:#fff}
+  footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--faint);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>dsh-whale-desktop · 项目框架图<br><small>独立 Electron 桌面挂件（透明 / 置顶 / 点击穿透）· 版本 0.12.3</small></h1>
+<p class="lead">
+  一份按"进程边界 → 数据流 → 职责划分 → 自检"顺序整理的架构总览。所有行号与符号名都取自当前仓库源码，
+  与 <code>docs/HANDOVER.md</code>、<code>docs/DEVELOPMENT.md</code> 对照核对过（差异见文末「文档与代码的偏差」）。
+</p>
+
+<div class="meta">
+  <div class="chip">仓库 <b>D:\DSWorkspace\dsh-whale-desktop</b></div>
+  <div class="chip">版本 <b>0.12.3</b>（package.json）</div>
+  <div class="chip">形态 <b>独立 Electron 应用</b>（非 DSH 插件）</div>
+  <div class="chip">上游 <b>dsh-whale-musume v2.1.0</b>（vendor/whale 零改动）</div>
+  <div class="chip ok">桌宠监听 <b>127.0.0.1:38911</b></div>
+  <div class="chip ok">余额代理 <b>127.0.0.1:3020</b></div>
+  <div class="chip">用户数据 <b>%APPDATA%\dsh-whale-desktop\</b></div>
+</div>
+
+<!-- ============================================================ 1 -->
+<h2><span class="n">1</span>总览：四层 + 两条外部数据源</h2>
+
+<div class="layer l-host">
+  <div class="head"><b>宿主环境（本机 Windows）</b><span>不属于本仓库</span></div>
+  <div class="body">
+    <div class="nodes n4">
+      <div class="node">
+        <div class="t">DSH 网页服务</div>
+        <div class="d">127.0.0.1:3080，带 browser-trust 围栏（无 cookie 必然 401 = 在跑）</div>
+      </div>
+      <div class="node">
+        <div class="t">DSH 数据目录</div>
+        <div class="d"><code>~/.dsh</code>：<br>sessions/ · settings.yaml · .credentials.yaml</div>
+      </div>
+      <div class="node">
+        <div class="t">启动脚本（用户资产）</div>
+        <div class="d">工作区里的 <code>Start-DSH-Web-Background.bat</code>，自己查端口、自己落日志</div>
+      </div>
+      <div class="node">
+        <div class="t">DeepSeek 官方接口</div>
+        <div class="d"><code>api.deepseek.com/user/balance</code>（唯一联网的余额来源）</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="arrowrow">▲ 只读观察 / 唤起（<b>绝不重启</b>）&nbsp;&nbsp;│&nbsp;&nbsp;▼ 读取会话文件 · 拉起服务 · 代理余额</div>
+
+<div class="layer l-main">
+  <div class="head"><b>① Electron 主进程</b><span>src/main.js · 2847 行 · 唯一的"决策层"</span></div>
+  <div class="body">
+    <div class="nodes n4">
+      <div class="node hi">
+        <div class="t">窗口 / 托盘 / 快捷键</div>
+        <div class="d">整屏透明置顶窗口 <code>createWindow()</code>；托盘 <code>buildTrayTemplate()</code>；<code>Alt+Shift+W</code></div>
+        <div class="ln">L224 · L732 · L2820</div>
+      </div>
+      <div class="node hi">
+        <div class="t">光标轮询（穿透的命门）</div>
+        <div class="d"><code>screen.getCursorScreenPoint()</code> 每 80ms 推相对坐标 —— 不依赖 Windows 鼠标转发</div>
+        <div class="ln">startCursorPolling L311</div>
+      </div>
+      <div class="node hi">
+        <div class="t">IPC 注册表（24 条）</div>
+        <div class="d">全部 <code>shell:</code> 前缀，<code>registerIpc()</code> 一处收口</div>
+        <div class="ln">L2515</div>
+      </div>
+      <div class="node hi">
+        <div class="t">配置单一真源</div>
+        <div class="d"><code>DEFAULT_CONFIG</code> + 白名单 setter，末尾一律 <code>refreshTrayMenu()</code></div>
+        <div class="ln">L134 · L650–705</div>
+      </div>
+      <div class="node good">
+        <div class="t">DSH 状态 / 计费编排</div>
+        <div class="d"><code>startDshWatcher()</code> · <code>handleTurnEnd()</code>（记账无条件、播报有条件）</div>
+        <div class="ln">L333 · L417</div>
+      </div>
+      <div class="node good">
+        <div class="t">「打开DSH」编排</div>
+        <div class="d"><code>openDshWeb()</code>：探活 → 计划 → 交接起进程 → 等就绪 → 开浏览器</div>
+        <div class="ln">L2415 · L2395</div>
+      </div>
+      <div class="node">
+        <div class="t">辅助窗口工厂</div>
+        <div class="d"><code>createAuxWindow()</code>（首帧再显示 + 置顶 + 失焦撤顶）</div>
+        <div class="ln">L494</div>
+      </div>
+      <div class="node warn">
+        <div class="t">自检探针（7 个）</div>
+        <div class="d"><code>runDshProbe</code> / <code>runGrowthProbe</code> / <code>runSayProbe</code> / <code>runOpenDshProbe</code> / <code>runSettingsProbe</code> / <code>runMenuProbe</code> / <code>scheduleShot</code></div>
+        <div class="ln">L790–2338</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="arrowrow">▲ 页面经 <b>preload contextBridge</b> 上报（<code>window.whaleShell</code>）&nbsp;&nbsp;│&nbsp;&nbsp;▼ 主进程 <code>webContents.send</code> 推送</div>
+
+<div class="layer l-render">
+  <div class="head"><b>② 渲染进程 —— 三个同源文档（同一个 http://127.0.0.1:38911 源）</b><span>src/pet/*</span></div>
+  <div class="body">
+    <div class="nodes n3">
+      <div class="node hi">
+        <div class="t">桌宠页面 index.html</div>
+        <div class="d">
+          加载顺序即依赖顺序：<br>
+          上游 CSS → 壳 CSS → <code>preshim.js</code>（fetch 垫片）→ 上游 <code>whale-moe-core.js</code> → 注入过说话钩子的 <code>mascot.js</code> → <code>shell.js</code>
+        </div>
+        <div class="ln">index.html L22–38</div>
+      </div>
+      <div class="node hi">
+        <div class="t">设置窗口 settings.*</div>
+        <div class="d">6 个分类（看板娘 / 窗口与状态 / 大小与位置 / 维护 / 天气与余额 / 花费播报），左侧导航由 <code>&lt;section data-panel&gt;</code> 自动生成</div>
+        <div class="ln">settings.html L23–49</div>
+      </div>
+      <div class="node hi">
+        <div class="t">养成窗口 growth.*</div>
+        <div class="d">5 个标签页（今日任务 / 本周签到 / 称号 / 成长日记 / 成就），算法全部来自上游 core</div>
+        <div class="ln">growth.html · growth.js</div>
+      </div>
+    </div>
+    <p class="sub" style="margin-top:12px">
+      三个文档 <b>同源 → 共享 localStorage</b>：设置窗口写 <code>whale-moe:*</code>，桌宠页收 <code>storage</code> 事件后派发上游自己的
+      <code>whale-moe-prefs-change</code>。这是"跨窗口同步不写 IPC"的全部秘密（shell.js L751–765）。
+    </p>
+    <p class="sub">
+      <b>各自一座桥</b>（contextIsolation 打开，页面拿不到 require / node）：
+      <code>preload.js</code> → <code>window.whaleShell</code>（桌宠：setInteractive / reportPetRect / getConfig / setConfig / onCursor / onDshState / openSettings / openGrowth / openDsh / say / getTodayUsage / reload / quit / log）·
+      <code>settings-preload.js</code> → <code>window.whaleSettings</code>（getConfig / setConfig / resetPosition / reloadPet / openDataDir / openLog / openDsh / dshPlan / appInfo / priceInfo / say / setContentHeight）·
+      <code>growth-preload.js</code> → <code>window.whaleGrowth</code>（claimQuest / equipBadge / onTab）。
+    </p>
+  </div>
+</div>
+
+<div class="arrowrow">▲ HTTP 请求&nbsp;&nbsp;│&nbsp;&nbsp;▼ 静态资源 + 运行时注入</div>
+
+<div class="layer l-srv">
+  <div class="head"><b>③ 本地静态服务器</b><span>src/server.js · 195 行 · 让上游"零改动"的关键</span></div>
+  <div class="body">
+    <div class="nodes n4">
+      <div class="node">
+        <div class="t">GET /</div>
+        <div class="d">→ <code>src/pet/index.html</code></div>
+      </div>
+      <div class="node">
+        <div class="t">GET /assets/*</div>
+        <div class="d">→ <code>vendor/whale/*</code>（上游写死的绝对路径，原样映射）</div>
+      </div>
+      <div class="node">
+        <div class="t">GET /pet/*</div>
+        <div class="d">→ <code>src/pet/*</code></div>
+      </div>
+      <div class="node warn">
+        <div class="t">GET /pet/mascot.js</div>
+        <div class="d">
+          与 <code>/assets/dsh-whale-moe.js</code> 同一份文件，但返回前做一次字符串替换注入
+          <code>__dshWhaleMoeSay</code>（锚点 <code>__dshWhaleMoeStarted</code>）；磁盘文件不变
+        </div>
+        <div class="ln">MASCOT_PATCH L76–105</div>
+      </div>
+    </div>
+    <p class="sub" style="margin-top:12px">
+      另有 <code>GET /__shell/state</code>：JSON 自检端点，把主进程侧状态摊开给外部脚本（端口冲突时自动顺延，最多 20 次）。
+    </p>
+  </div>
+</div>
+
+<div class="arrowrow">▲ 只读取素材，永不写入</div>
+
+<div class="layer l-up">
+  <div class="head"><b>④ 上游素材（MIT）· 一个字都没改</b><span>vendor/whale/ · 4 个代码/配置文件 + 92 张立绘</span></div>
+  <div class="body">
+    <div class="nodes n4">
+      <div class="node good">
+        <div class="t">dsh-whale-moe.js</div>
+        <div class="d">桌宠本体：定位、拖拽、右键菜单、气泡打字、状态机、天气特效</div>
+      </div>
+      <div class="node good">
+        <div class="t">whale-moe-core.js</div>
+        <div class="d">UMD 纯状态机：39 成就 / 称号表 / 任务池 / 等级 / 签到规则（浏览器挂 <code>DshWhaleMoeCore</code>，Node 可 require）</div>
+      </div>
+      <div class="node good">
+        <div class="t">dsh-whale-moe.css</div>
+        <div class="d">容器 <code>pointer-events:none</code>、可交互件 <code>auto</code> —— 壳层穿透判定就建立在这一点上</div>
+      </div>
+      <div class="node good">
+        <div class="t">generated/*.webp</div>
+        <div class="d">92 张立绘（thinking / tool / success / failure / weather / festival …）</div>
+      </div>
+    </div>
+    <div class="note red">
+      <b>铁律：不许改 vendor/whale/。</b><code>npm run sync:upstream</code> 会整目录覆盖，改动全丢。
+      要改行为只有三条正路：<b>运行时注入</b>（server.js）、<b>DOM 后处理</b>（shell.js）、<b>预垫片</b>（preshim.js）。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ 2 -->
+<h2><span class="n">2</span>核心机制：点击穿透（整屏透明窗口的代价与解法）</h2>
+
+<div class="grid2">
+  <div class="box">
+    <h3 style="margin-top:0">为什么窗口 = 整个工作区</h3>
+    <p class="sub">
+      上游把桌宠位置存在 <code>whale-moe:floatX/floatY</code>（<b>视口坐标</b>），拖拽逻辑也在它内部。
+      若窗口只有桌宠那么大，一拖就被窗口边缘裁掉，等于要接管上游的拖拽。
+      铺满工作区 + 默认穿透，则上游的定位/拖拽/菜单/存档<b>全部保持原行为</b>。
+    </p>
+    <div class="flow" style="margin-top:10px">
+      <div class="step"><div class="k">窗口创建</div><div class="v"><code>setIgnoreMouseEvents(true,{forward:true})</code> —— 默认全穿透</div></div>
+      <div class="step"><div class="k">命中判定</div><div class="v"><code>elementFromPoint</code> 命中 html/body 之外 ⇒ 压到她了（吃上游 CSS 的 pointer-events 结构）</div></div>
+      <div class="step"><div class="k">切回接收</div><div class="v">变化时 <code>shell:interactive</code> → 主进程 <code>setIgnoreMouseEvents(false)</code></div></div>
+    </div>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">为什么不靠页面的 mousemove</h3>
+    <p class="sub">
+      Windows 上 <code>forward:true</code> 的转发<b>并不可靠</b>：实测把指针移到桌宠身上，页面收不到任何
+      <code>mousemove</code>（<code>petRect.lastMouse</code> 始终为空），于是"压到桌宠才接管"永远不成立 ——
+      穿透看着正常，但她<b>永远点不动</b>。合成移动（SetCursorPos）不行、真实鼠标有时行，
+      所以这个 bug 时有时无、极难复现。
+    </p>
+    <div class="flow" style="margin-top:10px">
+      <div class="step"><div class="k">主通道</div><div class="v"><b>主进程 80ms 轮询</b>推 <code>shell:cursor</code>（确定性）</div></div>
+      <div class="step"><div class="k">快通道</div><div class="v">页内 <code>mousemove</code> 保留（能工作时更灵敏），<b>两条都汇进 <code>applyCursor()</code></b></div></div>
+      <div class="step"><div class="k">兜底</div><div class="v"><code>blur</code> / <code>mouseleave</code> 后回到穿透；有右键菜单时不抢</div></div>
+    </div>
+    <div class="note" style="margin-bottom:0">
+      <b>不许给 body 设 <code>pointer-events:none</code>。</b>该属性会被子元素继承，上游弹到 body 上的菜单会一起变成不可点（shell.css）。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ 3 -->
+<h2><span class="n">3</span>数据流 A：DSH 工作状态联动（只读会话文件）</h2>
+
+<div class="flow box">
+  <div class="step">
+    <div class="k">数据源</div>
+    <div class="v"><code>~/.dsh/sessions/&lt;workspace&gt;/session-&lt;id&gt;/session.v3.jsonl.zstd</code> ——
+      <b>多帧拼接的 zstd</b>，帧间以 magic <code>28 B5 2F FD</code> 分隔 <span class="pill d">dsh-state.js L31, L75</span></div>
+  </div>
+  <div class="step">
+    <div class="k">增量解帧</div>
+    <div class="v">记住 <code>offset</code>，只读新增字节，按 magic 切帧；<b>正在写的最后一帧解压失败就不推进 offset</b>，下轮重试（L248–272）。
+      单轮上限 4000 帧，启动时一次追平历史。</div>
+  </div>
+  <div class="step">
+    <div class="k">记录 → 状态</div>
+    <div class="v">
+      <code>turn/start</code> ⇒ inTurn；<code>tool/call</code> ⇒ lastType=tool（记工具名）；
+      <code>turn/end</code> ⇒ flash = completed ? success : failure（闪 4s）；
+      <code>tool/result</code> 带 error ⇒ failure
+      <span class="pill d">ingest() L275</span>
+    </div>
+  </div>
+  <div class="step">
+    <div class="k">派生 busy</div>
+    <div class="v"><b><code>busy = inTurn &amp;&amp; !idleTooLong</code>，stale 绝不回写 <code>inTurn</code></b>。
+      早期版本把兜底写成持久状态，结果启动时只吃前 400 帧 → 判 stale → inTurn 被永久清掉 → <b>永远报空闲</b>
+      <span class="pill d">recompute() L357</span></div>
+  </div>
+  <div class="step">
+    <div class="k">推到页面</div>
+    <div class="v"><code>onChange</code> → <code>shell:dsh-state</code>（<code>followDsh===false</code> 时推 disabled；
+      <code>dsh-probe</code> 模式独占通道）</div>
+  </div>
+  <div class="step">
+    <div class="k">合成上游信号</div>
+    <div class="v">
+      shell.js 按需创建/删除几个 <code>&lt;i&gt;</code> 元素：thinking=<code>data-status="pending"</code>、
+      tool=<code>data-running</code>（textContent = 工具关键词）、success=<code>data-state="success"</code>、
+      failure=<code>data-status="error"</code>。上游状态机据此选立绘与姿势。
+      <span class="pill r">shell.js applyDshState L851</span>
+    </div>
+  </div>
+  <div class="step">
+    <div class="k">两条硬约束</div>
+    <div class="v">
+      ① 合成节点盒子必须 &gt;1px、与视口相交、<code>opacity</code> 不能正好是 "0" ⇒ 用 <code>2x2 + opacity:0.01</code> 贴 (0,0)；<br>
+      ② 上游对 <b>error 节点有基线机制</b>（启动 settle 窗口内已存在的错误节点被当历史）⇒ 节点必须<b>按需新建、闪完即删</b>，否则真实出错永远识别不到。
+    </div>
+  </div>
+  <div class="step">
+    <div class="k">按工具换姿势</div>
+    <div class="v">壳层维护 <code>TOOL_HINTS</code>（DSH 工具名 → 关键词），上游 <code>detectToolPose()</code> 关键词表<b>顺序敏感</b>：
+      deploy → test → debug → search → write → bash → review → plan，首个命中即返回。</div>
+  </div>
+</div>
+
+<!-- ============================================================ 4 -->
+<h2><span class="n">4</span>数据流 B：花费播报与今日账本</h2>
+
+<div class="grid2">
+  <div class="box">
+    <h3 style="margin-top:0">一个 turn 结束后的两条岔路</h3>
+    <div class="flow">
+      <div class="step"><div class="k">turn/end</div><div class="v">带 usage + reason + at + session + <code>historical</code> 标记</div></div>
+      <div class="step"><div class="k">算钱</div><div class="v"><code>costOf(usage, rates)</code>：<b>缓存命中/未命中分开算</b>（价差约 50 倍），
+        <code>reasoningTokens</code> 是 <code>outputTokens</code> 的子集<b>不加第二遍</b></div></div>
+      <div class="step"><div class="k">记账（无条件）</div><div class="v">UsageLedger 按 <code>会话#turn</code> 去重落盘；早于今天的直接丢（不许账本跟着回放翻页）</div></div>
+      <div class="step"><div class="k">播报（有条件）</div><div class="v">仅"实时 turn" + <code>costSay</code> 开 + 金额 ≥ <code>costThreshold</code>（默认 0.01 元）</div></div>
+      <div class="step"><div class="k">开口</div><div class="v"><code>sayToPet()</code> → <code>executeJavaScript</code> 调 <code>__dshWhaleMoeSay(text, 5000)</code></div></div>
+    </div>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">单价从哪来（三层分离）</h3>
+    <table class="tbl-tight">
+      <tr><th>模块</th><th>只回答一个问题</th></tr>
+      <tr><td><code>pricing.json</code></td><td>官方价目表（本地文件，<b>运行时只读、不联网</b>）</td></tr>
+      <tr><td><code>price-table.js</code></td><td><b>此刻该用哪一档价</b>：按模型 + 别名 + 峰谷取（<code>resolveRates</code> L84）；模型不在表里 ⇒ 回落手动配置（高峰 ×2）</td></tr>
+      <tr><td><code>pricing.js</code></td><td><b>怎么乘</b>：纯函数 <code>costOf</code> / <code>isPeak</code> / 格式化（<code>formatTokens</code> / <code>formatMoney</code>），不判断时段</td></tr>
+      <tr><td><code>usage-today.js</code></td><td><b>今天一共多少</b>：落盘、按本地日期归零、<code>会话#turn</code> 去重、启动回放当天历史</td></tr>
+    </table>
+    <p class="sub">
+      <b>当前模型怎么知道</b>：会话记录 <code>request/header</code> 里的 <code>data.header.config.model</code>
+      （<code>assistant/message</code> 里没有模型名）；没读到就回落 <code>~/.dsh/settings.yaml</code> 的默认模型。
+      所以中途换模型不用重启，设置窗口那行每 2 秒自动跟上（<code>shell:price-info</code>）。
+    </p>
+    <p class="sub">
+      <b>为什么计时点要挪</b>：上游 <code>showLineNow</code> 在开口那一刻就设 4.5 秒到期，而台词逐字打
+      （标点 260ms、每 5 字 130ms、其余 64ms），四十多字的余额播报光打字就 4 秒 ——
+      注入的钩子改成<b>等 <code>typingTimer</code> 空了再计时</b>，停留 5 秒，任意点击立刻收起。
+    </p>
+  </div>
+</div>
+
+<h3>余额查询链路（为什么要一个本地代理）</h3>
+<div class="flow box">
+  <div class="step"><div class="k">形状不兼容</div><div class="v">
+    官方 <code>{is_available, balance_infos:[{currency,total_balance,…}]}</code> ≠ 上游要的
+    <code>{ok:true, balances:[{currency,totalBalance}]}</code> ⇒ <code>balance-proxy.js</code> 取 Key、转字段、<b>补 CORS 头</b>
+  </div></div>
+  <div class="step"><div class="k">CORS 是硬要求</div><div class="v">
+    桌宠页源是 <code>127.0.0.1:38911</code>，代理在 <code>3020</code> —— <b>端口不同就是跨源</b>，少了
+    <code>Access-Control-Allow-Origin</code> 浏览器会静默拦掉（表现只是"余额不可用"）
+  </div></div>
+  <div class="step"><div class="k">Key 优先级</div><div class="v">
+    <code>DEEPSEEK_API_KEY</code> 环境变量 → <code>~/.dsh/.credentials.yaml</code> 的 <code>refs.DEEPSEEK_API_KEY</code> → 用户数据目录 <code>balance-key.txt</code>；只在内存用，不落盘不打日志
+  </div></div>
+  <div class="step"><div class="k">地址可配置</div><div class="v">
+    上游把地址写死成 <code>http://127.0.0.1:3020/balance</code> ⇒ <code>preshim.js</code> 在<b>上游脚本之前</b>加载，
+    只拦这一个 URL 重写到 <code>whale-moe:balanceEndpoint</code>，其余请求原样放行
+  </div></div>
+  <div class="step"><div class="k">念那句话</div><div class="v">
+    余额+档位来自页面 <code>window.__dshWhaleMoeBalance</code>（上游 60s 刷）+ 上游
+    <code>formatBalance()</code>；今日消耗来自主进程账本（<code>shell:usage-today</code>，<b>已格式化好的字符串</b>）
+  </div></div>
+</div>
+
+<!-- ============================================================ 5 -->
+<h2><span class="n">5</span>数据流 C：「打开DSH」启动决策与交接</h2>
+
+<div class="box">
+  <div class="flow">
+    <div class="step"><div class="k">① 探活</div><div class="v">
+      <code>probeDshWeb()</code> 只看"HTTP 有没有应答"：<b>401 = 在跑</b>，连接被拒才是没跑。
+      反过来会把"在跑"当"没跑"，平白再拉一个服务抢同一端口 —— 更糟。
+      <span class="pill u">open-dsh.js L135</span>
+    </div></div>
+    <div class="step"><div class="k">② 在跑</div><div class="v">
+      <b>只</b> <code>shell.openExternal</code>，一个进程都不动。token 每次启动都换，重启等于打断用户正在聊的会话 ——
+      这是硬约束，不是优化。
+    </div></div>
+    <div class="step"><div class="k">③ 没跑：定计划</div><div class="v">
+      <code>resolveLaunchPlan()</code> 按优先级挑路（见下表），并把 <code>plan</code> 摘要暴露给设置窗口与 <code>/__shell/state</code>
+      <span class="pill u">L294</span>
+    </div></div>
+    <div class="step"><div class="k">④ 交接起进程</div><div class="v">
+      生成 PowerShell 脚本 → <code>-EncodedCommand</code>（UTF-16LE base64）→
+      <code>Start-Process -WindowStyle Hidden -PassThru</code>，
+      <b>回传 <code>DSHLAUNCHPID=</code></b>。<b>不 spawn 到自己身上</b>：桌宠是 GUI 进程，直接 spawn 的子进程与它共用隐藏控制台，
+      一个 Ctrl+C / 关控制台就整串带走（0.12.0 现场只剩一行 <code>^C</code> + 0xC000013A）
+      <span class="pill u">buildHandoffScript L392 · launchDshService L~480</span>
+    </div></div>
+    <div class="step"><div class="k">⑤ 等就绪</div><div class="v">
+      轮询到应答（默认 60s），每轮顺手做两件事：从日志尾巴捞 token 地址、看进程还活着没（<b>提前死就立刻报 <code>exited</code></b>，不干等超时）。
+      探活成功后<b>再给最多 2 秒补 token</b>（实测 6.5s 应答、7.4s 才写 token 行）—— 不等就会退化成打开裸地址、无 cookie 者必然 401。
+      <span class="pill u">waitForDshWeb L535</span>
+    </div></div>
+    <div class="step"><div class="k">⑥ 回落与善后</div><div class="v">
+      拉起前摘掉 <code>DSH_SHELL</code>/<code>DSH_SESSION_ID</code>/<code>DSH_WEB_URL</code>（描述"我在哪个会话里"，对新服务是错的），
+      <b>保留 <code>DSH_HOME</code></b>；一律 <code>--no-open</code>（浏览器由我们开，才能回报"起没起来"）。
+      <code>openDshPending</code> 让连点两下共享同一次操作。
+    </div></div>
+  </div>
+</div>
+
+<h3>启动计划优先级</h3>
+<table>
+  <tr><th style="width:52px">优先级</th><th>路线</th><th>什么时候用 / 注意</th></tr>
+  <tr><td>1</td><td>用户配置的 <code>dshCommand</code></td><td>非空时。<code>.bat/.cmd/.ps1/.exe</code> 视为"启动脚本，原样跑"，否则当命令并追加 <code>web --no-open --port</code></td></tr>
+  <tr><td>2</td><td>工作空间启动脚本 <code>Start-DSH-Web-Background.bat(.cmd)</code></td><td>程序目录或上级目录里存在时。<b>地址必须是 DSH 默认端口</b> —— 脚本不接受 <code>--port</code>，硬用会让"打开的地址"和"监听的端口"各说各话。日志在<b>脚本旁边</b></td></tr>
+  <tr><td>3a</td><td><code>node &lt;dsh&gt;/lib/bin.js web …</code></td><td>从 npm 全局 shim 推出 bin.js 且 PATH 里有 <code>node.exe</code>；不过 <code>cmd.exe</code> 就少一层引号与控制台麻烦</td></tr>
+  <tr><td>3b</td><td><code>cmd /c &lt;dsh.cmd&gt; web …</code></td><td>只有 shim、没有 bin.js/node.exe</td></tr>
+  <tr><td>3c</td><td><code>npx --yes @deepseek-ai/dsh web …</code></td><td>都没找到时的兜底（最慢）</td></tr>
+</table>
+
+<div class="note">
+  <b>环境变量大小写的坑</b>：<code>{...process.env}</code> 拷成普通对象后 <code>env.PATH</code> 会取到 <code>undefined</code> ——
+  Windows 环境变量名不分大小写，但 <code>process.env</code> 是大小写不敏感的特例对象，一拷就没了这个特性（这台机器上拷出来是 <code>Path</code>）。
+  后果是找 <code>node.exe</code> 一路失败、悄悄退化成最慢的 npx。现在统一走 <code>envGet()</code>。
+</div>
+
+<!-- ============================================================ 6 -->
+<h2><span class="n">6</span>入口职责划分（新增功能该放哪）</h2>
+
+<div class="grid3">
+  <div class="box">
+    <h3 style="margin-top:0"><span class="pill m">右键桌宠</span></h3>
+    <p class="sub"><b>只放"对她做的事" + 唤起 DSH</b>：投喂 / 戳一下 / 夸夸 / 两个小游戏 / 回到原位 / <b>打开DSH</b>。</p>
+    <p class="sub">心智是"我要逗她"；「打开DSH」是同层级的"通过她做一件事"。</p>
+    <p class="sub">壳层在这里做两件修补：<br>
+      ① <code>clampIntoViewport()</code> 用实测矩形夹回视口（上游写死 180×160，实测 8 项菜单 194×292）；<br>
+      ② <code>stripNonInteractionItems()</code> 摘掉上游"打开看板娘设置"，<code>injectOpenDshItem()</code> 补进「打开DSH」——<b>先摘后补，顺序反了插入位置就算错</b>。
+      <span class="pill r">shell.js watchMenu L138</span>
+    </p>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0"><span class="pill r">托盘</span></h3>
+    <p class="sub"><b>高频全局动作 + 快速开关</b>：显示桌宠 / 总是置顶 / 跟随 DSH / 开机自启 / 大小 / 重置位置 / 重新加载 / 打开数据目录 / 打开日志 / <b>设置…</b> / 退出。</p>
+    <p class="sub">她藏起来时唯一还能点到的入口，所以"顺手就要用"的留在这里。</p>
+    <p class="sub"><b>与设置窗口是同一份 config 的两个入口，不会打架</b>：所有 setter 末尾都 <code>refreshTrayMenu()</code>，托盘每次重建都重读 config。
+      <b>不变量</b>：新增任何改 config 的 setter，末尾必须带上 <code>refreshTrayMenu()</code>。</p>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0"><span class="pill u">设置窗口</span></h3>
+    <p class="sub"><b>需要解释的配置项</b>，按 6 类分屏。三条实现约定：<br>
+      ① 左侧导航由 <code>&lt;section data-panel&gt;</code> 的 <code>&lt;h2&gt;</code> 自动生成，加一屏就多一项；<br>
+      ② 高度由<b>页面</b>量好经 <code>shell:settings-size</code> 报上来（主进程读不到渲染进程布局）；<br>
+      ③ 量高度<b>不能用 <code>body.scrollHeight</code></b>（下限是可视高度，永远缩不回去），要按"留白+标题+最高一屏+底栏"逐项相加。
+    </p>
+    <p class="sub">⚙ 齿轮浮层 = 状态（天气 / 余额）+ 两个入口（日常养成 / 余额查询），<b>点任一项先收起再执行</b>（<code>closeAnd</code>）。</p>
+    <p class="sub"><b>桌宠偏好走 localStorage，壳配置走 IPC</b> —— 这个分工不能混：<code>PET_PREFS</code>（pet/chat/particles）与城市/Key/余额地址全写 <code>whale-moe:*</code>；缩放、置顶、自启、跟随、花费播报、dshUrl/dshCommand 全走 <code>api.setConfig</code>。</p>
+  </div>
+</div>
+
+<!-- ============================================================ 7 -->
+<h2><span class="n">7</span>数据与接口清单</h2>
+
+<div class="grid2">
+  <div>
+    <h3>IPC 通道（全部 <code>shell:</code> 前缀，registerIpc L2515）</h3>
+    <table class="tbl-tight">
+      <tr><th>通道</th><th>方向 / 作用</th></tr>
+      <tr><td><code>shell:interactive</code></td><td>页面→主：鼠标命中变化，切 <code>setIgnoreMouseEvents</code></td></tr>
+      <tr><td><code>shell:pet-rect</code></td><td>页面→主：上报矩形 + lastMouse + hud + sayHook</td></tr>
+      <tr><td><code>shell:cursor</code></td><td>主→页：80ms 光标相对坐标</td></tr>
+      <tr><td><code>shell:dsh-state</code></td><td>主→页：工作状态与工具名</td></tr>
+      <tr><td><code>shell:get-config</code> / <code>set-config</code></td><td>配置读写（<b>set-config 是白名单</b>）</td></tr>
+      <tr><td><code>shell:app-info</code> / <code>price-info</code></td><td>版本信息 / 单价与取价依据（设置窗口 2s 轮询）</td></tr>
+      <tr><td><code>shell:settings-size</code></td><td>设置窗口报高度（只认设置窗口自己的 sender）</td></tr>
+      <tr><td><code>shell:open-settings</code> / <code>open-growth</code></td><td>开辅助窗口（growth 可带 tab）</td></tr>
+      <tr><td><code>shell:open-dsh</code> / <code>dsh-plan</code></td><td>打开 DSH / 查询"这次走哪条路"</td></tr>
+      <tr><td><code>shell:say</code></td><td>让她说一句（stay 时长可给）</td></tr>
+      <tr><td><code>shell:usage-today</code></td><td>今日消耗（已格式化的字符串）</td></tr>
+      <tr><td><code>shell:claim-quest</code> / <code>equip-badge</code></td><td><b>回页面执行</b>：领取要跑 applyGrowth/成就算/粒子/台词</td></tr>
+      <tr><td><code>shell:reload</code> / <code>reset-position</code> / <code>open-path</code> / <code>log</code> / <code>quit</code></td><td>维护类</td></tr>
+    </table>
+  </div>
+  <div>
+    <h3>HTTP 路由（server.js）</h3>
+    <table class="tbl-tight">
+      <tr><th>路径</th><th>说明</th></tr>
+      <tr><td><code>GET /__shell/state</code></td><td><b>排查第一站</b>：interactive / ignoreMouseEvents / petRect（含 lastMouse、hud、sayHook）/ dsh / openDsh / openDshPlan / cursor / workArea / visible</td></tr>
+      <tr><td><code>GET /pet/mascot.js</code></td><td>注入过说话钩子的上游脚本（响应头 <code>X-Shell-Say-Hook</code>）</td></tr>
+      <tr><td><code>GET /assets/*</code></td><td>上游素材原文</td></tr>
+      <tr><td><code>GET /pet/*</code></td><td>壳自己的页面资源</td></tr>
+      <tr><td><code>127.0.0.1:3020/balance</code></td><td>内置余额代理（上游写死的接口）</td></tr>
+      <tr><td><code>127.0.0.1:3080/</code></td><td>DSH 网页；<b>无 cookie 必然 401，那不是故障</b></td></tr>
+    </table>
+
+    <h3>磁盘布局</h3>
+    <table class="tbl-tight">
+      <tr><th>位置</th><th>内容</th></tr>
+      <tr><td><code>%APPDATA%\dsh-whale-desktop\</code></td><td><code>config.json</code> · <code>shell.log</code>（主进程+页面 console+error 汇总）· <code>dsh-web.log</code>/<code>.err.log</code> · <code>usage-today.json</code>（自检实例用 <code>-probe</code> 后缀）</td></tr>
+      <tr><td><code>&lt;启动脚本目录&gt;\dsh-web.log</code></td><td>走脚本那条路时日志在脚本旁边，token 地址也在里面</td></tr>
+      <tr><td><code>vendor/upstream.json</code></td><td>上游同步记录（tag / 文件清单）</td></tr>
+      <tr><td><code>pricing.json</code></td><td>价目表（运行时只读，人工 <code>npm run refresh:prices</code> 刷新）</td></tr>
+      <tr><td><code>tmp/</code></td><td>探针截图与临时脚本，整个被 gitignore</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>模块清单（行数为当前工作副本实测）</h3>
+<div class="grid2">
+  <div>
+    <table class="tbl-tight">
+      <tr><th>主进程 / 服务层</th><th>行数</th><th>一句话职责</th></tr>
+      <tr><td><code>src/main.js</code></td><td>2847</td><td>唯一的决策层：窗口 · 托盘 · IPC · 配置 · 编排 · 7 个探针</td></tr>
+      <tr><td><code>src/server.js</code></td><td>195</td><td>本地静态服务器 + <code>mascot.js</code> 运行时注入 + <code>/__shell/state</code></td></tr>
+      <tr><td><code>src/dsh-state.js</code></td><td>402</td><td>多帧 zstd 会话文件 → 工作状态 + turn 用量 + 当前模型</td></tr>
+      <tr><td><code>src/open-dsh.js</code></td><td>585</td><td>探活 / token 解析 / 启动计划 / 交接起进程 / 等就绪（纯 node，不 require electron）</td></tr>
+      <tr><td><code>src/balance-proxy.js</code></td><td>187</td><td>3020 余额代理：取 Key、转字段、补 CORS</td></tr>
+      <tr><td><code>src/pricing.js</code></td><td>125</td><td><b>怎么乘</b>：纯函数计价与文案格式化</td></tr>
+      <tr><td><code>src/price-table.js</code></td><td>145</td><td><b>用哪档价</b>：读 pricing.json，按模型+别名+峰谷取；读 DSH 默认模型</td></tr>
+      <tr><td><code>src/usage-today.js</code></td><td>152</td><td>今日账本：落盘、本地日期归零、<code>会话#turn</code> 去重</td></tr>
+      <tr><td><code>preload.js</code> / <code>settings-preload.js</code> / <code>growth-preload.js</code></td><td>62 / 29 / 22</td><td>三座 contextBridge 桥</td></tr>
+    </table>
+  </div>
+  <div>
+    <table class="tbl-tight">
+      <tr><th>页面层 src/pet/*</th><th>行数</th><th>一句话职责</th></tr>
+      <tr><td><code>index.html</code></td><td>40</td><td>装配顺序即依赖契约（CSP / 上游 CSS / 垫片 / core / 注入过的 mascot / shell.js）</td></tr>
+      <tr><td><code>shell.js</code></td><td>903</td><td>穿透判定 + 菜单修补 + HUD + 状态信号合成 + 上报</td></tr>
+      <tr><td><code>shell.css</code></td><td>135</td><td>透明画布 + HUD 样式（<b>body 不得 pointer-events:none</b>）</td></tr>
+      <tr><td><code>preshim.js</code></td><td>32</td><td>余额接口可配置的 fetch 垫片（必须最先执行）</td></tr>
+      <tr><td><code>settings.html/.js/.css</code></td><td>62 / 612 / 319</td><td>独立设置窗口：6 分类二级菜单 + 页面量高度</td></tr>
+      <tr><td><code>growth.html/.js/.css</code></td><td>36 / 333 / 264</td><td>养成/图鉴 5 标签页，<b>只渲染，算法全用上游 core</b></td></tr>
+    </table>
+    <table class="tbl-tight">
+      <tr><th>数据 / 脚本</th><th>行数</th><th>说明</th></tr>
+      <tr><td><code>pricing.json</code></td><td>55</td><td>价目表（flash / v4-pro + 2 个别名），运行时只读</td></tr>
+      <tr><td><code>vendor/upstream.json</code></td><td>7</td><td>上游溯源（tag v2.1.0）</td></tr>
+      <tr><td><code>scripts/test-cost.mjs</code></td><td>506</td><td>离线 33 项，复用 refresh-prices 的解析器</td></tr>
+      <tr><td><code>scripts/refresh-prices.mjs</code></td><td>242</td><td>人工刷新价目表（解析失败绝不写文件）</td></tr>
+      <tr><td><code>scripts/sync-upstream.mjs</code> / <code>check-vendor.mjs</code></td><td>180（修前 140）/ 45</td><td>同步 / 校验上游素材（零三方依赖）；同步时<b>合并写</b> <code>vendor/upstream.json</code>（见 13.1）</td></tr>
+      <tr><td><code>scripts/*.ps1</code></td><td>114 / 213 / 52 / 46</td><td>verify-shell · open-dsh-e2e · check-desktop-input · push</td></tr>
+      <tr><td><code>scripts/cold-start-check.mjs</code></td><td>103</td><td>真机冷启动 dsh web（独立 DSH_HOME + 空闲端口）</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>壳配置 <code>config.json</code>（默认值）</h3>
+<table class="tbl-tight">
+  <tr><th>键</th><th>默认</th><th>说明</th></tr>
+  <tr><td><code>port</code></td><td>38911</td><td>桌宠本地服务器端口（<b>端口=origin=localStorage</b>，别随便变）</td></tr>
+  <tr><td><code>scale</code> / <code>alwaysOnTop</code> / <code>autoLaunch</code> / <code>visible</code> / <code>followDsh</code></td><td>1 / true / false / true / true</td><td>托盘与设置窗口共用</td></tr>
+  <tr><td><code>costSay</code> / <code>costThreshold</code></td><td>true / 0.01</td><td>花费播报开关与阈值（元）</td></tr>
+  <tr><td><code>costPriceHit</code> / <code>costPriceMiss</code> / <code>costPriceOutput</code></td><td>0.02 / 1 / 4</td><td><b>手动单价</b>，只在模型不在价目表里时用（高峰 ×2）</td></tr>
+  <tr><td><code>dshUrl</code> / <code>dshCommand</code></td><td>http://127.0.0.1:3080 / ""</td><td>要打开的地址 / 拉起命令（空 = 自动）</td></tr>
+</table>
+
+<h3>页面存储（localStorage，前缀 <code>whale-moe:</code>）</h3>
+<p class="sub">
+  <b>壳层自己的</b>：<code>settingsTab</code> · <code>weatherCity</code>/<code>weatherKey</code>/<code>weatherLat</code>/<code>weatherLon</code> · <code>balance</code>/<code>balanceEndpoint</code>。<br>
+  <b>上游的（别改语义）</b>：<code>quests</code> / <code>signinStreak</code> / <code>weekSignin</code> / <code>affinity</code> / <code>level</code> / <code>badge</code> / <code>title</code> / <code>achievements</code> / <code>journal</code> / <code>floatX</code> / <code>floatY</code> / <code>satiety</code> / <code>mood</code> / <code>chat</code> / <code>game</code> / <code>night</code> / <code>pet</code> …
+</p>
+<div class="note">
+  <b>不同端口 = 不同 origin = 不同 localStorage。</b>所以 <code>--standalone --port=xxxxx</code> 的自检实例看到的是"全新的一只"；
+  自检里想验证"共享存储"必须用同一端口。同理：<b>同文档写 localStorage 不会触发自己的 <code>storage</code> 事件</b>，测同步必须在另一个窗口里写。
+</div>
+
+<!-- ============================================================ 8 -->
+<h2><span class="n">8</span>启动时序（app.whenReady）</h2>
+<div class="box">
+  <div class="flow">
+    <div class="step"><div class="k">0 · 模块装载</div><div class="v"><code>app.setName('dsh-whale-desktop')</code>（否则 userData 用中文 productName）
+      → 追加 <code>--disable-features=CalculateNativeWinOcclusion</code>（<b>别删</b>，否则新窗口白屏）</div></div>
+    <div class="step"><div class="k">1 · 参数解析</div><div class="v"><code>--shot</code>/<code>--menu-probe</code>/<code>--dsh-probe</code>/<code>--settings-probe</code>/<code>--growth-probe</code>/<code>--say-probe</code>/<code>--open-dsh-probe</code>/<code>--standalone</code>/<code>--port=</code>/<code>--dev</code>；
+      任一探针模式 ⇒ <code>PROBE_MODE</code> ⇒ 跳过单实例锁 + <code>OPEN_DSH_DRY</code></div></div>
+    <div class="step"><div class="k">2 · 单实例锁</div><div class="v">非探针模式下 <code>requestSingleInstanceLock()</code>，第二实例只把已有的叫出来</div></div>
+    <div class="step"><div class="k">3 · ready</div><div class="v"><code>loadConfig()</code> → <code>registerIpc()</code> → <code>startPetServer()</code>（失败就 <code>app.exit(1)</code>）</div></div>
+    <div class="step"><div class="k">4 · 界面</div><div class="v"><code>createWindow()</code> + <code>createTray()</code>；<code>did-finish-load</code> 里按模式分发探针</div></div>
+    <div class="step"><div class="k">5 · 价目表</div><div class="v"><code>loadTable()</code> + 当前模型（先 <code>settings.yaml</code>，之后被会话记录校正）</div></div>
+    <div class="step"><div class="k">6 · 账本</div><div class="v"><b>必须先于 watcher</b>：watcher 一启动就回放当天历史 turn 补账，账本没建好那批账会直接丢</div></div>
+    <div class="step"><div class="k">7 · watcher</div><div class="v"><code>startDshWatcher()</code></div></div>
+    <div class="step"><div class="k">8 · 余额代理</div><div class="v">3020 被占不算致命（说明用户有自己的代理）</div></div>
+    <div class="step"><div class="k">9 · 收尾</div><div class="v">自启校正 → 注册 <code>Alt+Shift+W</code>；退出时 <code>will-quit</code> 依次关快捷键/watcher/两个辅助窗口/代理/server</div></div>
+  </div>
+</div>
+
+<!-- ============================================================ 9 -->
+<h2><span class="n">9</span>上游契约层：壳与上游之间只有这几根线</h2>
+<p class="lead">壳层不改上游任何一个字节，全部协作都发生在这张表上。改动时只要这些名字/属性还在，上游就照常工作。</p>
+<div class="grid2">
+  <div class="box">
+    <h3 style="margin-top:0">全局对象</h3>
+    <table class="tbl-tight">
+      <tr><th>名字</th><th>谁给 / 谁用</th></tr>
+      <tr><td><code>window.DshWhaleMoeCore</code></td><td>上游 UMD 导出（浏览器），壳层用它的 <code>weatherText</code> / <code>formatBalance</code> / <code>ACHIEVEMENTS</code> / <code>BOND</code> / <code>QUEST_POOL</code> / <code>computeWeekSignin</code> / <code>refreshQuests</code> / <code>claimQuest</code> / <code>bondUnlocks</code></td></tr>
+      <tr><td><code>window.__dshWhaleMoeSay</code></td><td><b>server.js 注入</b>（锚点 <code>__dshWhaleMoeStarted</code>）；壳层唯一"主动说话"的入口</td></tr>
+      <tr><td><code>window.__dshWhaleMoeWeather</code></td><td>上游闭包里的 <code>weatherState</code> —— <b>同一个对象引用</b>，壳层写回它，她的天气特效/台词/浮层会一起用上</td></tr>
+      <tr><td><code>window.__dshWhaleMoeBalance</code></td><td>上游自己 60s 刷新的余额状态；壳层只读</td></tr>
+      <tr><td><code>window.__dshWhaleMoeClaimQuest</code> / <code>__dshWhaleMoeApplyBadge</code></td><td>上游钩子；主进程用 <code>executeJavaScript</code> 直调，把领取/佩戴的副作用留在页面里</td></tr>
+      <tr><td><code>window.__dshWhaleMoeDebug</code></td><td>上游的状态调试快照；<code>dsh:probe</code> 靠它断言"上游认成了什么"</td></tr>
+    </table>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">DOM 钩子与两条依赖</h3>
+    <table class="tbl-tight">
+      <tr><th>选择器 / 属性</th><th>用途</th></tr>
+      <tr><td><code>[data-dsh-whale-root]</code></td><td>桌宠根节点：HUD 与信号宿主都挂在它下面</td></tr>
+      <tr><td><code>[data-dsh-whale-frame]</code> / <code>[data-dsh-whale-layer]</code></td><td>立绘图层；上报矩形、统计加载</td></tr>
+      <tr><td><code>[data-dsh-whale-context]</code></td><td>右键菜单：壳层在这里摘项 / 补项 / 夹回视口</td></tr>
+      <tr><td><code>[data-dsh-whale-prefs]</code></td><td>页面内偏好面板：壳层补 × / 点外关 / Esc 三条退路</td></tr>
+      <tr><td><code>[data-dsh-whale-bubble]</code></td><td>台词气泡：壳层给它套上游同一套 <code>dsh-whale-out</code> 淡出</td></tr>
+      <tr><td><code>[data-dsh-whale-gear]</code> / <code>-gear-mini</code></td><td>齿轮：捕获阶段监听，开合壳层 HUD</td></tr>
+    </table>
+    <div class="note" style="margin-bottom:0">
+      <b>两根必须记住的依赖：</b><br>
+      ① 上游 CSS 的结构是 <b>容器 <code>pointer-events:none</code>、可交互件 <code>auto</code></b> —— 这正是"命中非 html/body 即压到桌宠"这个判定成立的前提；<br>
+      ② 上游给 <b>rootNode 的 click 全部 <code>stopPropagation</code></b> —— 所以"能冒泡到 <code>document</code> 的点击"天然等于"点在桌宠之外"，点外收起气泡/浮层/面板都不需要额外判定。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ 10 -->
+<h2><span class="n">10</span>自检矩阵（证据优先于感觉）</h2>
+<table>
+  <tr><th>命令</th><th>断言数</th><th>验什么</th><th>要不要真鼠标</th></tr>
+  <tr><td><code>npm run test:cost</code></td><td>33</td><td>计价 / 峰谷 / 阈值 / 格式化 / turn 累加 / primed 闸门 / 今日账本 / 价目表 / 刷新解析器（<b>不需要 Electron</b>）</td><td>否</td></tr>
+  <tr><td><code>npm run check:vendor</code></td><td>—</td><td>上游素材完整性（4 文件 + 92 立绘，v2.1.0）</td><td>否</td></tr>
+  <tr><td><code>npm run open-dsh:probe</code></td><td>11</td><td>地址归一化 / token 解析 / 四条启动分支 / 环境摘标记 / 已跑不起进程 / 交接起进程 / token 地址 / <b>进程不在桌宠进程树里</b> / 早死即报错 / 超时 / 菜单项链路（全程 dry-run）</td><td>否</td></tr>
+  <tr><td><code>npm run settings:probe</code></td><td>20</td><td>右键菜单构成 + 设置窗口（6 分类 / 高度 / 往返 / 单价区 / 与托盘勾选同步 / <b>像素级白屏断言</b>）</td><td>否</td></tr>
+  <tr><td><code>npm run growth:probe</code></td><td>20</td><td>养成窗口 5 标签页 + 领取 + 佩戴 + HUD 两个按钮的实测尺寸</td><td>否</td></tr>
+  <tr><td><code>npm run say:probe</code></td><td>8</td><td>气泡可见完整文本 + 打完字 3 秒仍可见 + 到点消失 + 点击立刻收起 + 低阈值不播报</td><td>否</td></tr>
+  <tr><td><code>npm run menu:probe</code></td><td>—</td><td>菜单不越界（打印实测像素 + PASS/FAIL + 截图）</td><td>否</td></tr>
+  <tr><td><code>npm run dsh:probe</code></td><td>—</td><td>状态联动"日记"：读上游 <code>__dshWhaleMoeDebug</code> 看它认成什么（步进必须 &gt;4.5s，上游有 goneHold 防抖）</td><td>否</td></tr>
+  <tr><td><code>npm run verify:shell</code></td><td>3</td><td>真的移动指针验证点击穿透（跑完还原）</td><td><b>是</b></td></tr>
+  <tr><td><code>npm run e2e:open-dsh</code></td><td>—</td><td>端到端：DSH 没在跑时真的把它拉起来（隔离 <code>DSH_HOME</code>）</td><td><b>是</b></td></tr>
+  <tr><td><code>npm run cold:start</code></td><td>—</td><td>真机冷启动 <code>dsh web</code>，打印 plan / ready=?s / token=?s，跑完按端口收拾</td><td>否</td></tr>
+  <tr><td><code>npm run shot</code></td><td>—</td><td>无屏幕时看截图 + DOM 状态 + <b>原始位图 alpha</b>（透明窗口存 PNG 常显示成白底，<code>a=0</code> 才是真相）</td><td>否</td></tr>
+</table>
+
+<div class="note">
+  <b>两条真鼠标的脚本先问一句"桌面能不能驱动"</b>：
+  <code>powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-desktop-input.ps1</code> ——
+  退出码 <b>0</b> = 能跑；<b>3</b> = <code>SetCursorPos</code> 被拒（锁屏 / RDP 断开 / 快速用户切换）。
+  <b>那不是代码问题</b>：曾经同一份代码 <code>verify:shell</code> 先过、十分钟后不过，排查半天才发现桌面不可驱动。
+  这时只跑无头探针，并在结论里写明原因。
+</div>
+<div class="note">
+  <b>改断言就要同步改 <code>expected</code> 计数</b>：每个探针有一个 <code>const expected = N</code>
+  （main.js L1244=20 / L1405=8 / L1819=11 / L2192=20），与实际断言数不符会报"断言数不符"并失败 —— 这是故意的。
+  探针报数不符时先看紧邻的 <code>failed &lt;msg&gt;</code> 行（try/catch 会把真实错误吞掉）。
+</div>
+
+<!-- ============================================================ 11 -->
+<h2><span class="n">11</span>维护地图：六类改动各动哪里</h2>
+<table>
+  <tr><th>要加的东西</th><th>动哪些文件（顺序即依赖）</th></tr>
+  <tr>
+    <td>一条右键菜单项</td>
+    <td><code>src/pet/shell.js</code> 的 <code>watchMenu</code>（<code>stripNonInteractionItems</code> 之后、<code>clampIntoViewport</code> 之前，参考 <code>injectOpenDshItem</code>）→ <code>settings:probe</code> 补一条断言。 <b>别改 vendor</b></td>
+  </tr>
+  <tr>
+    <td>一个设置项</td>
+    <td>① <code>settings.html</code> 放进对应 <code>&lt;section data-panel&gt;</code>；② <code>settings.js</code> 用 <code>row(label, hint, control)</code> 追加；③ 主进程 <code>DEFAULT_CONFIG</code> + <code>set-config</code> 白名单；④ <code>settings:probe</code> 的 <code>expectedRows</code> 加这个 label；⑤ 文档（README 表格 + CHANGELOG）</td>
+  </tr>
+  <tr>
+    <td>一个自检探针</td>
+    <td><code>argValue('xxx-probe')</code> 开关 → 加进 <code>PROBE_MODE</code>（这样它能与常驻实例并存）→ <code>did-finish-load</code> 里分发 → 写 <code>runXxxProbe()</code>（末尾 <code>expected</code> 计数）→ <code>package.json</code> 加脚本 → 文档第 3 节</td>
+  </tr>
+  <tr>
+    <td>改价目表</td>
+    <td><code>npm run refresh:prices</code>（抓官网 → 解析 → 打印 diff → 写文件；解析不出完整表格就报错且不写文件）。加模型/别名直接编辑 <code>pricing.json</code> 的 <code>models</code>/<code>aliases</code>，改完 <code>npm run test:cost</code> 会帮你核对</td>
+  </tr>
+  <tr>
+    <td>同步上游</td>
+    <td><code>npm run sync:upstream [-- v2.1.0 | --from-local]</code> → 跑一次 <code>npm run shot</code> 确认 <code>layerLoaded: true</code>（上游若改了变量名立刻暴露）→ <code>npm run check:vendor</code></td>
+  </tr>
+  <tr>
+    <td>发版</td>
+    <td><code>package.json</code> 版本 + <code>CHANGELOG.md</code>（新增/变更/修复分开，附<b>现场证据</b>与取舍理由）→ 必要时更新 README / DEVELOPMENT → 第 9 节自检 → <b>重启常驻实例</b> → 提交（<code>feat:</code>/<code>fix:</code> + 一行结论）→ <code>scripts/push.ps1</code></td>
+  </tr>
+</table>
+
+<h3>重启常驻桌宠（改完代码要让它生效）</h3>
+<div class="box">
+  <p class="sub" style="margin-top:0">用 WMI 创建进程是为了让父进程不是当前 shell（否则 shell 一退它可能被牵连）：</p>
+  <pre style="background:#0b1017;border:1px solid var(--line);border-radius:6px;padding:12px;overflow:auto;font-family:var(--mono);font-size:12px;color:#9fd2ff;margin:0">$exe = 'D:\DSWorkspace\dsh-whale-desktop\node_modules\electron\dist\electron.exe'
+&amp; taskkill /PID &lt;旧pid&gt; /T /F
+([wmiclass]'Win32_Process').Create('"' + $exe + '" "D:\DSWorkspace\dsh-whale-desktop"', 'D:\DSWorkspace\dsh-whale-desktop')</pre>
+  <p class="sub" style="margin-bottom:0">
+    <b>按端口收进程</b>而不是 <code>taskkill /T</code>：父进程先退出时树枚举抓不到子进程（实测漏过三个），
+    于是"起来了但日志是空的"其实是上一个用例的残留服务还占着端口。
+  </p>
+</div>
+
+<!-- ============================================================ 12 -->
+<h2><span class="n">12</span>铁律与已知限制</h2>
+<div class="grid2">
+  <div class="box">
+    <h3 style="margin-top:0">八条不能碰的线</h3>
+    <ul>
+      <li><b>绝不改 <code>vendor/whale/</code></b> —— sync 会覆盖，改行为走注入/DOM 后处理/垫片</li>
+      <li><b>绝不重启正在跑的 DSH</b> —— 每次启动换 token，重启打断用户会话；「打开DSH」是唤起优先</li>
+      <li><b>不要用 PowerShell 改仓库文本文件</b> —— PS 5.1 按 GBK 读无 BOM UTF-8、按 ANSI 写回，中文成片变 <code>?</code>（真毁过 350 行）</li>
+      <li><b><code>.ps1</code> 含中文必须 UTF-8 with BOM</b>（新脚本一律写纯 ASCII 更省事）；编辑工具会丢 BOM 并写成 LF</li>
+      <li><b>改断言同步改 <code>expected</code></b>，否则"跑绿了"其实是少跑了</li>
+      <li><b>探针不许有副作用</b>：不弹浏览器、不改用户配置、不写用户账本（用 <code>--standalone</code> + 独立端口 + <code>usage-today-probe.json</code> + dry-run）</li>
+      <li><b>不替用户决定启停</b>：桌宠对 DSH 只做只读观察与唤起</li>
+      <li><b>注释里别写 <code>**/xxx</code></b> —— <code>**/</code> 会提前结束块注释，报 <code>SyntaxError</code></li>
+    </ul>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">已知限制（不是 bug，别当 bug 修）</h3>
+    <ul>
+      <li>只铺满<b>主显示器</b>工作区，多屏未支持</li>
+      <li>花费用量按 turn 累加，<b>子代理的 token 也计入</b>；账本只覆盖<b>当前正在跟的那个会话</b></li>
+      <li>计费<b>不处理中国法定节假日</b>（那几天官方按空闲价，我们会高估最多一倍）</li>
+      <li>余额依赖上游 60s 刷新 + 内置代理；代理端口被占时不启动</li>
+      <li>「打开DSH」不会替你重启正在跑的 DSH（设计如此）</li>
+      <li><b>未打包</b>：<code>electron-builder</code> 还没接（路线图第 2 项）</li>
+      <li><code>openSettingsWindow</code> 还没复用 <code>createAuxWindow</code>，两份实现别漂移</li>
+    </ul>
+    <p class="sub" style="margin-bottom:0">
+      <b>路线图</b>：多显示器 / 打包免安装 exe / 全局快捷键自定义 / 每屏一只 / 花费播报的节假日与主子代理区分。
+    </p>
+  </div>
+</div>
+
+<!-- ============================================================ 13 -->
+<h2><span class="n">13</span>核对记录：真偏差 / 已修 / 我自己搞错过的</h2>
+<p class="lead">
+  这一节是<b>修正后</b>的版本。初稿里有两条"偏差"其实是<b>我用错命令读出行数</b>得出的假结论 ——
+  留着记录，是因为那条命令在这个环境里还会骗别人（见 13.2）。
+</p>
+
+<h3>13.1 真偏差（已修）</h3>
+<table>
+  <tr><th style="width:44px">#</th><th>偏差</th><th>处理</th></tr>
+  <tr>
+    <td>1</td>
+    <td><code>docs/HANDOVER.md</code> 第 1 节写版本 <b>0.12.1</b>，实际 <code>package.json</code> = <b>0.12.2</b></td>
+    <td><b>已改 HANDOVER</b>（它自己也写了"以 package.json 为准"）</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><code>docs/DEVELOPMENT.md</code> 4.9 节表格写设置窗口"<b>分 4 类</b>"</td>
+    <td><b>已改为 6 类</b>并列出名称 —— README / HANDOVER 写的 6 类一直是对的，<code>settings.html</code> 实测 6 个 <code>data-panel</code></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>scripts/sync-upstream.mjs</code> 写 <code>vendor/upstream.json</code> 时只写 <code>{upstream,tag,syncedAt}</code>，<b>覆盖</b>掉首次 vendor 留下的 <code>method</code> / <code>packageVersion</code></td>
+    <td><b>已修</b>：改成 <code>readMeta()</code> + <code>writeMeta(patch)</code> <b>合并写</b>，两个字段实测保留；<code>--from-local</code> 那条路原先根本不写这个文件，现在也写</td>
+  </tr>
+</table>
+
+<h3>13.2 两条"行数偏差"是假结论 —— 错在我的命令</h3>
+<div class="box">
+  <p class="sub" style="margin-top:0">
+    初稿说 HANDOVER 的 <code>main.js</code> 2628 行 / <code>shell.js</code> 819 行"过时"。<b>错的是我的命令，不是文档。</b>
+  </p>
+  <div class="flow">
+    <div class="step"><div class="k">我的读法</div><div class="v">
+      <code>(Get-Content &lt;file&gt;).Count</code> → 本机得到 <code>main.js = 2628</code>、<code>shell.js = 819</code>
+    </div></div>
+    <div class="step"><div class="k">权威读法</div><div class="v">
+      按 <b>LF 字节数</b>（Node <code>fs.readFileSync</code>）与 <b>git blob</b> 数，两个来源一致给出
+      <code>main.js = 2847</code>、<code>shell.js = 903</code>；工作区是 <b>LF</b>（不是 CRLF），提交里的 blob 也是同一份内容
+    </div></div>
+    <div class="step"><div class="k">所以</div><div class="v">
+      <b>HANDOVER 的 2628 / 819 本来就不对</b>（它记的是更早版本的行数），
+      而我用 <code>Get-Content</code> 数出来的数<b>碰巧和它一样</b> —— 两边都错，我却据此宣布"文档漂移、我的图是对的"。
+      教训：<b>先说清证据来源，再下结论</b>（这正是 HANDOVER 第 11 节那句"证据优先于感觉"）。
+    </div></div>
+  </div>
+  <p class="sub" style="margin-bottom:0">
+    <b>结论：以 <code>git show HEAD:&lt;file&gt;</code> 或 Node 的 LF 计数为准。</b>
+    这份框架图里的行数已按此复核过一遍；<code>Get-Content | Measure-Object -Line</code> 在这台机器上会少报，<b>别用它数行</b>。
+  </p>
+</div>
+
+<h3>13.3 环境坑（不是项目问题，但会咬到维护者）</h3>
+<table>
+  <tr><th style="width:44px">#</th><th>现象</th><th>说明</th></tr>
+  <tr>
+    <td>1</td>
+    <td>在 DSH 会话里跑 <code>npm run &lt;probe&gt;</code> 直接死在 <code>main.js:60 app.setName</code></td>
+    <td><code>ELECTRON_RUN_AS_NODE=1</code> 被继承了，<code>electron.exe</code> 被当成<b>纯 Node</b> 跑。
+      清掉即可：<code>cmd /c "set ELECTRON_RUN_AS_NODE=&amp;&amp; …"</code>。
+      重定向输出时表现为"<b>空文件 + exit 1</b>"，极易误判成"探针没跑"</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>DSH 沙箱在本工作区报 <code>SetNamedSecurityInfoW failed (Win32 5)</code></td>
+    <td>文件策略为 workspace-write 时，<b>任何</b> pwsh 命令都会失败（连 <code>Write-Output hi</code> 都不行）；
+      切到 full-access 后正常。与项目无关</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>探针日志里 <code>[shortcut] register failed Alt+Shift+W</code></td>
+    <td>常驻实例占着热键，正常现象</td>
+  </tr>
+</table>
+
+<h3>13.4 本次实测底账（跑的是 0.12.2 的代码，随 0.12.3 提交）</h3>
+<p class="sub" style="margin-top:0">
+  之后只改了<b>文档</b>与 <code>scripts/sync-upstream.mjs</code>（<code>node --check</code> 复核过），
+  没有动任何被探针覆盖的运行时代码。
+</p>
+<table>
+  <tr><th>命令</th><th>结果</th></tr>
+  <tr><td><code>npm run test:cost</code></td><td><b>33/33 PASS</b></td></tr>
+  <tr><td><code>npm run check:vendor</code></td><td><b>OK</b> — 4 个文件 + 92 张立绘（v2.1.0）</td></tr>
+  <tr><td><code>npm run open-dsh:probe</code></td><td><b>11/11 PASS</b>（dry-run，未弹浏览器）</td></tr>
+  <tr><td><code>npm run settings:probe</code></td><td><b>20/20 PASS</b>（content 704x382、<code>darkRatio=0.0528</code>）</td></tr>
+  <tr><td><code>npm run growth:probe</code></td><td><b>20/20 PASS</b></td></tr>
+  <tr><td><code>npm run say:probe</code></td><td><b>8/8 PASS</b></td></tr>
+  <tr><td><code>npm run menu:probe</code></td><td><b>PASS</b> — 194×292、8 项、四向溢出 0</td></tr>
+  <tr><td><code>npm run dsh:probe</code></td><td>跑完（无 PASS/FAIL 计数）。<code>tool/write</code> 那步立绘仍是上一步的 <code>work-slack-phone</code>，属<b>探针注释已写明的 goneHold 消抖</b>（步进 4.5s 只比 4s 多一点）；同一次运行里 <code>tool/grep → work-idea</code> 是对的</td></tr>
+</table>
+<div class="note">
+  <code>verify:shell</code> / <code>e2e:open-dsh</code> 这两条<b>真鼠标</b>的没有跑（它们会真的移动系统指针）。
+  要跑先看 <code>scripts/check-desktop-input.ps1</code> 的退出码：<b>0</b> = 能跑，<b>3</b> = 环境不可驱动。
+</div>
+
+<h3>13.5 另外几条容易踩但不显眼的约束</h3>
+<div class="note">
+  <code>shell.css</code> L19-22：<b>绝不给 <code>body</code> 设 <code>pointer-events:none</code></b>（会被子元素继承，上游弹到 body 上的菜单全变不可点）。<br>
+  <code>settings.css</code> L63-68：<code>.shell</code> / <code>.pane</code> / <code>.rail</code> <b>不能有纵向 margin</b>（否则 <code>naturalHeight()</code> 量出来少几像素，平白多一条滚动条）。<br>
+  <code>shell.js</code> L337-340：TDZ 调用时序约束（那里不能同步调 <code>ensureHud()</code>，<code>HUD_ID</code> 是后声明的 <code>const</code>），与 HANDOVER 第 7 节"探针 3/5 项就结束 = TDZ"是同一类坑。
+</div>
+
+<footer>
+  由 DSH 会话<b>实读源码 + 实跑探针</b>整理，并对照 <code>docs/HANDOVER.md</code> / <code>docs/DEVELOPMENT.md</code> / <code>README.md</code> / <code>CHANGELOG.md</code> 核对。<br>
+  符号名、行号与行数取自当前工作区代码（0.12.2，行数按 <code>git show HEAD:&lt;file&gt;</code> 与 Node 的 LF 计数复核）；探针断言数取自 <code>src/main.js</code> 的 <code>const expected</code> 与 <code>scripts/test-cost.mjs</code>。<br>
+  本文件是<b>只读的架构说明</b>，不参与运行、不被任何代码引用；与 <code>docs/HANDOVER.md</code>（接手）· <code>docs/DEVELOPMENT.md</code>（为什么）互补：这里回答"<b>整体长什么样</b>"。
+</footer>
+
+</div>
+</body>
+</html>

@@ -14,7 +14,7 @@
 | --- | --- |
 | 仓库 | `D:\DSWorkspace\dsh-whale-desktop`（工作区根是 `D:\DSWorkspace`） |
 | 远端 | https://github.com/crossoverthere/dsh-whale-desktop （分支 `main`） |
-| 版本 | `0.12.1` —— 一切以 `package.json` 为准，别信文档里的数字 |
+| 版本 | `0.12.3` —— 一切以 `package.json` 为准，别信文档里的数字 |
 | 形态 | **独立 Electron 桌面挂件**（不是 DSH 插件）。透明、置顶、点击穿透 |
 | 上游 | [dsh-whale-musume](https://github.com/Sutera-Diffusus/dsh-whale-musume) v2.1.0，素材在 `vendor/whale/`，**一个字都没改** |
 | 常驻实例 | 桌宠监听 `127.0.0.1:38911`，DSH 网页在 `127.0.0.1:3080`，内置余额代理在 `127.0.0.1:3020` |
@@ -114,13 +114,62 @@ npm run shot -- --shot-delay=8000 --shot=D:\tmp\a.png
 
 `tmp/` 整个被 gitignore（探针截图、临时脚本都在里面，不会进仓库）。
 
+### 3.6 跑探针前先确认 `ELECTRON_RUN_AS_NODE` 没被设上
+
+**在 DSH 会话里（被 agent 工具调起来的 shell）它是 `1`**，于是
+`node_modules\electron\dist\electron.exe .` 会**当成纯 Node 跑 `src/main.js`**，
+直接死在第一行：
+
+```
+TypeError: Cannot read properties of undefined (reading 'setName')
+    at Object.<anonymous> (src/main.js:60:5)
+```
+
+看到这个报错**不是项目坏了**，是环境把 Electron 降级成 Node 了。清掉再跑：
+
+```powershell
+$env:ELECTRON_RUN_AS_NODE = $null     # 或 cmd /c "set ELECTRON_RUN_AS_NODE=&& …"
+npm run settings:probe
+```
+
+同一个变量还会让 `npm run <probe>` 静默产出**空输出 + exit 1**（重定向到文件时最容易误判成"探针没跑"）。
+另外：常驻实例在跑时，探针里的 `[shortcut] register failed Alt+Shift+W` 是**正常的**
+（热键已被常驻实例占用）。
+
+### 3.7 实测底账（0.12.2 的代码，随 0.12.3 提交）
+
+> 说明：下面这一批是在 `0.12.2` 的代码上跑的；之后只改了**文档**与
+> `scripts/sync-upstream.mjs`（并用 `node --check` 复核过），没有动任何被探针覆盖的运行时代码。
+
+| 命令 | 结果 | 备注 |
+| --- | --- | --- |
+| `npm run test:cost` | **33/33 PASS** | exit 0 |
+| `npm run check:vendor` | **OK** | 4 个文件 + 92 张立绘（v2.1.0） |
+| `npm run open-dsh:probe` | **11/11 PASS** | 全程 dry-run，未弹浏览器 |
+| `npm run settings:probe` | **20/20 PASS** | content 704x382、`darkRatio=0.0528` |
+| `npm run growth:probe` | **20/20 PASS** | |
+| `npm run say:probe` | **8/8 PASS** | |
+| `npm run menu:probe` | **PASS** | 菜单 194x292、8 项、四向溢出全 0 |
+| `npm run dsh:probe` | 跑完（无 PASS/FAIL 计数） | 见下方那条观察 |
+
+`dsh:probe` 里 `tool/write` 那一步打印的立绘仍是上一步的
+`dsh-whale-state-work-slack-phone.webp`（期望 `work-meeting`）——
+这是**探针注释里已经写明的 goneHold 消抖**（home 视图 4s，探针步进 4.5s 只比它多一点），
+不是姿势映射坏了：同一次运行里 `tool/grep` 正确切到了 `work-idea`。
+真要收紧断言，把 `HOLD_MS`（`main.js` 的 `runDshProbe`）提到 6000 以上再跑。
+
+> `DEVELOPMENT.md` 4.8 节写的参考值是 `darkRatio≈0.052` / `coloredRatio≈0.020`；
+> 本次实测是 `0.0528` / `0.0431`。**两处不必对齐**：这条断言看的是"别接近 0"（白屏），
+> 阈值留了余量，而暗像素/彩色像素占比本来就随主题、字体渲染与当时那一屏的内容浮动。
+> 只要两个数都明显大于 0 就是正常的。
+
 ---
 
 ## 4. 代码地图
 
 ```
 src/
-├─ main.js          2628 行，主进程：窗口/托盘/IPC/自检探针/「打开DSH」编排
+├─ main.js          2847 行，主进程：窗口/托盘/IPC/自检探针/「打开DSH」编排
 ├─ preload.js        桌宠页面的桥（window.whaleShell）
 ├─ settings-preload.js  设置窗口的桥（window.whaleSettings）
 ├─ growth-preload.js    养成窗口的桥（window.whaleGrowth）
@@ -135,7 +184,7 @@ src/
 └─ pet/
    ├─ index.html     按顺序引入上游三个文件 + preshim
    ├─ preshim.js     上游脚本运行前的最小垫片（fetch 等）
-   ├─ shell.js       819 行，点击穿透判定 + 右键菜单补丁 + 头顶浮层 + 气泡按钮
+   ├─ shell.js       903 行，点击穿透判定 + 右键菜单补丁 + 头顶浮层 + 气泡按钮
    ├─ shell.css      透明画布与宿主适配（**别给 body 设 pointer-events: none**）
    ├─ settings.*     独立设置窗口（HTML/CSS/JS）
    └─ growth.*       养成 / 图鉴窗口
@@ -228,6 +277,13 @@ scripts/
   `git ls-remote origin refs/heads/main` 的 SHA 为准。
 - **npm 11+ 会拦 Electron 的安装脚本**：`node node_modules/electron/install.js` 补下载。
 - `pwsh`（PowerShell 7）**不存在**，脚本一律用 `powershell`（5.1）。
+- **`ELECTRON_RUN_AS_NODE` 在 DSH 会话里是 `1`**：被 agent 工具调起来的 shell 会继承它，
+  于是 `electron.exe .` 被当成纯 Node 跑，探针**静默死在 `main.js:60 app.setName`**
+  （重定向输出时表现为空文件 + exit 1）。跑任何 `npm run <probe>` 之前先清掉 —— 见 3.6 节。
+- **文件策略是 workspace-write 时，本工作区（`D:\DSWorkspace`）上所有 pwsh 命令都会失败**：
+  `SetNamedSecurityInfoW failed (Win32 5): grantWrite(D:\DSWorkspace)`，连 `Write-Output hi` 都不例外。
+  这不是代码问题，是沙箱给工作区根目录改 ACL 被拒（目录属主/权限所致）；
+  切到 full-access，或把工作区换到可写的目录即可。**遇到它别去怀疑项目。**
 
 ---
 
